@@ -97,6 +97,7 @@ export default function StockModule({
     category: '',
     price: '',
     stock: '',
+    initialStock: '',
     minStock: '',
     description: ''
   });
@@ -186,6 +187,7 @@ export default function StockModule({
         category: editingProduct.category,
         price: editingProduct.price.toString(),
         stock: editingProduct.stock.toString(),
+        initialStock: (editingProduct.initialStock || 0).toString(),
         minStock: editingProduct.minStock.toString(),
         description: editingProduct.description || ''
       });
@@ -366,6 +368,21 @@ export default function StockModule({
   const endIndex = startIndex + itemsPerPage;
   const paginatedProducts = filteredProducts.slice(startIndex, endIndex);
 
+  // Find missing products from sales data
+  const missingProducts = useMemo(() => {
+    const existingProductNames = new Set(products.map(p => p.name.toLowerCase()));
+    const missingItems = new Set<string>();
+    
+    registerSales.forEach(sale => {
+      const productName = sale.product.toLowerCase();
+      if (!existingProductNames.has(productName)) {
+        missingItems.add(sale.product);
+      }
+    });
+    
+    return Array.from(missingItems);
+  }, [products, registerSales]);
+
   // Get unique values for filters
   const categories = [...new Set(products.map(p => p.category))];
   const registers = [...new Set(registerSales.map(s => s.register))];
@@ -506,6 +523,50 @@ export default function StockModule({
     }
   };
 
+  // Handle initial stock change
+  const handleInitialStockChange = async (productId: string, newInitialStock: number) => {
+    const product = products.find(p => p.id === productId);
+    if (!product) return;
+    
+    // Calculate new current stock: initialStock - quantitySold
+    const quantitySold = product.quantitySold || 0;
+    const newCurrentStock = Math.max(0, newInitialStock - quantitySold);
+    
+    const updates: Partial<Product> = {
+      initialStock: newInitialStock,
+      stock: newCurrentStock
+    };
+    
+    try {
+      await onUpdateProduct(productId, updates);
+      showToast('success', `Stock initial mis à jour: ${product.name}`);
+    } catch (error) {
+      console.error('Error updating initial stock:', error);
+      showToast('error', 'Erreur lors de la mise à jour du stock initial');
+    }
+  };
+
+  // Handle adding missing products from sales
+  const handleAddMissingProducts = async () => {
+    if (missingProducts.length === 0) return;
+    
+    setIsSyncing(true);
+    try {
+      const result = await autoSyncProductsFromSales();
+      
+      if (result.created.length > 0) {
+        showToast('success', `${result.created.length} produits manquants ajoutés depuis les ventes`);
+      } else {
+        showToast('success', 'Synchronisation terminée - Aucun nouveau produit à créer');
+      }
+    } catch (error) {
+      console.error('Add missing products error:', error);
+      showToast('error', 'Erreur lors de l\'ajout des produits manquants');
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
   // Handle edit product form submission
   const handleEditProduct = async () => {
     if (!editingProduct) return;
@@ -516,6 +577,7 @@ export default function StockModule({
         name: editForm.name.trim(),
         category: editForm.category.trim(),
         price: parseFloat(editForm.price),
+        initialStock: parseInt(editForm.initialStock),
         stock: parseInt(editForm.stock),
         minStock: parseInt(editForm.minStock),
         description: editForm.description.trim()
@@ -731,6 +793,65 @@ export default function StockModule({
           <p className="text-cyan-400 text-sm">Total Vendus</p>
         </motion.div>
       </div>
+
+      {/* Missing Products Alert */}
+      {missingProducts.length > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-orange-500/10 border border-orange-500/20 rounded-xl p-6"
+        >
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center space-x-3">
+              <AlertTriangle className="w-6 h-6 text-orange-400" />
+              <div>
+                <h3 className="text-orange-400 font-semibold text-lg">
+                  Produits manquants détectés
+                </h3>
+                <p className="text-gray-400 text-sm">
+                  {missingProducts.length} produit(s) trouvé(s) dans les ventes mais absent(s) du stock
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={handleAddMissingProducts}
+              disabled={isSyncing}
+              className="bg-orange-500 text-white px-6 py-3 rounded-xl hover:bg-orange-600 
+                         disabled:opacity-50 disabled:cursor-not-allowed
+                         transition-all duration-200 flex items-center space-x-2 font-semibold"
+            >
+              {isSyncing ? (
+                <>
+                  <RefreshCw className="w-5 h-5 animate-spin" />
+                  <span>Ajout...</span>
+                </>
+              ) : (
+                <>
+                  <Plus className="w-5 h-5" />
+                  <span>Ajouter automatiquement</span>
+                </>
+              )}
+            </button>
+          </div>
+          <div className="bg-orange-500/5 border border-orange-500/10 rounded-lg p-4">
+            <p className="text-sm text-gray-400 mb-2">
+              <strong className="text-orange-400">Produits manquants:</strong>
+            </p>
+            <div className="text-sm text-gray-300">
+              {missingProducts.slice(0, 10).map((product, index) => (
+                <span key={index} className="inline-block bg-orange-500/20 text-orange-300 px-2 py-1 rounded mr-2 mb-2">
+                  {product}
+                </span>
+              ))}
+              {missingProducts.length > 10 && (
+                <span className="text-orange-400 font-medium">
+                  +{missingProducts.length - 10} autres...
+                </span>
+              )}
+            </div>
+          </div>
+        </motion.div>
+      )}
 
       {/* Selection Actions */}
       {selectedProducts.size > 0 && (
@@ -1049,7 +1170,8 @@ export default function StockModule({
                   { key: 'name', label: 'Nom' },
                   { key: 'category', label: 'Catégorie' },
                   { key: 'price', label: 'Prix' },
-                  { key: 'stock', label: 'Stock' },
+                  { key: 'initialStock', label: 'Stock Initial' },
+                  { key: 'stock', label: 'Stock Actuel' },
                   { key: 'minStock', label: 'Stock Min' },
                   { key: 'quantitySold', label: 'Vendus' },
                   { key: 'revenue', label: 'CA' }
@@ -1107,6 +1229,16 @@ export default function StockModule({
                   </td>
                   <td className="py-4 px-4 text-green-400 font-semibold">
                     {product.price.toFixed(2)} €
+                  </td>
+                  <td className="py-4 px-4">
+                    <input
+                      type="number"
+                      value={product.initialStock || 0}
+                      onChange={(e) => handleInitialStockChange(product.id, parseInt(e.target.value) || 0)}
+                      className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm
+                                focus:outline-none focus:border-cyan-500 text-center"
+                      min="0"
+                    />
                   </td>
                   <td className="py-4 px-4">
                     <div className="flex items-center space-x-2">
@@ -1238,7 +1370,7 @@ export default function StockModule({
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-400 mb-2">
                       Prix (€)
@@ -1249,6 +1381,21 @@ export default function StockModule({
                       min="0"
                       value={editForm.price}
                       onChange={(e) => setEditForm({...editForm, price: e.target.value})}
+                      className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white
+                                focus:outline-none focus:border-cyan-500"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">
+                      Stock initial
+                    </label>
+                    <input
+                      type="number"
+                      step="1"
+                      min="0"
+                      value={editForm.initialStock}
+                      onChange={(e) => setEditForm({...editForm, initialStock: e.target.value})}
                       className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white
                                 focus:outline-none focus:border-cyan-500"
                     />
