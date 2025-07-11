@@ -236,6 +236,46 @@ export default function StockModule({
     return filtered;
   };
 
+  // Calculate historical stock for products based on date filter
+  const calculateHistoricalStock = (product: Product, targetDate?: Date): {
+    historicalStock: number;
+    quantitySoldUpToDate: number;
+    isHistoricalView: boolean;
+  } => {
+    // If no target date specified, use current stock
+    if (!targetDate) {
+      return {
+        historicalStock: product.stock,
+        quantitySoldUpToDate: product.quantitySold || 0,
+        isHistoricalView: false
+      };
+    }
+
+    // Calculate what the stock would have been on the target date
+    const salesUpToDate = registerSales.filter(sale => {
+      const saleDate = sale.date;
+      const endOfTargetDate = endOfDay(targetDate);
+      
+      // Include sales up to and including the target date
+      return (isBefore(saleDate, endOfTargetDate) || saleDate.getTime() === endOfTargetDate.getTime()) &&
+             sale.product.toLowerCase().trim() === product.name.toLowerCase().trim() &&
+             sale.category.toLowerCase().trim() === product.category.toLowerCase().trim();
+    });
+
+    // Calculate quantities sold up to the target date
+    const quantitySoldUpToDate = salesUpToDate.reduce((sum, sale) => sum + sale.quantity, 0);
+    
+    // Calculate historical stock: initial stock - sales up to date
+    const initialStock = product.initialStock || product.stock + (product.quantitySold || 0);
+    const historicalStock = Math.max(0, initialStock - quantitySoldUpToDate);
+
+    return {
+      historicalStock,
+      quantitySoldUpToDate,
+      isHistoricalView: true
+    };
+  };
+
   // Get products that have sales matching the filtered criteria
   const getProductsWithFilteredSales = () => {
     const filteredSales = getFilteredSales();
@@ -267,10 +307,43 @@ export default function StockModule({
       .reduce((sum, sale) => sum + sale.total, 0);
   };
 
+  // Enhanced products with historical stock calculation
+  const enhancedProducts = useMemo(() => {
+    // Determine target date for historical calculation
+    const targetDate = dateRange.end ? new Date(dateRange.end) : 
+                      dateRange.start ? new Date(dateRange.start) : null;
+    
+    return products.map(product => {
+      const stockInfo = calculateHistoricalStock(product, targetDate);
+      
+      return {
+        ...product,
+        displayStock: stockInfo.historicalStock,
+        displayQuantitySold: stockInfo.quantitySoldUpToDate,
+        isHistoricalView: stockInfo.isHistoricalView,
+        originalStock: product.stock,
+        originalQuantitySold: product.quantitySold || 0
+      };
+    });
+  }, [products, dateRange, registerSales]);
+
   // Apply all filters including sales-based filters
   const filteredProducts = useMemo(() => {
-    // Start with products that match sales filters
-    let filtered = getProductsWithFilteredSales();
+    // Start with products that match sales filters but use enhanced products
+    let filtered = enhancedProducts;
+    
+    // Apply sales-based filtering first
+    if (filterRegister !== 'all' || filterSeller !== 'all' || dateRange.start || dateRange.end) {
+      const filteredSales = getFilteredSales();
+      const salesProductNames = new Set(
+        filteredSales.map(sale => `${sale.product.toLowerCase().trim()}|${sale.category.toLowerCase().trim()}`)
+      );
+      
+      filtered = filtered.filter(product => {
+        const productKey = `${product.name.toLowerCase().trim()}|${product.category.toLowerCase().trim()}`;
+        return salesProductNames.has(productKey);
+      });
+    }
     
     // Apply search filter
     if (searchTerm) {
@@ -286,44 +359,53 @@ export default function StockModule({
       filtered = filtered.filter(product => product.category === filterCategory);
     }
 
-    // Apply status filter
+    // Apply status filter using historical stock
     if (filterStatus !== 'all') {
       filtered = filtered.filter(product => {
+        const stockToCheck = product.displayStock;
         switch (filterStatus) {
           case 'in_stock':
-            return product.stock > product.minStock;
+            return stockToCheck > product.minStock;
           case 'low_stock':
-            return product.stock > 0 && product.stock <= product.minStock;
+            return stockToCheck > 0 && stockToCheck <= product.minStock;
           case 'out_of_stock':
-            return product.stock === 0;
+            return stockToCheck === 0;
           default:
             return true;
         }
       });
     }
 
-    // Apply stock level filter
+    // Apply stock level filter using historical stock
     if (filterStockLevel !== 'all') {
       filtered = filtered.filter(product => {
+        const stockToCheck = product.displayStock;
         switch (filterStockLevel) {
           case 'high':
-            return product.stock > 100;
+            return stockToCheck > 100;
           case 'medium':
-            return product.stock >= 10 && product.stock <= 100;
+            return stockToCheck >= 10 && stockToCheck <= 100;
           case 'low':
-            return product.stock > 0 && product.stock < 10;
+            return stockToCheck > 0 && stockToCheck < 10;
           case 'empty':
-            return product.stock === 0;
+            return stockToCheck === 0;
           default:
             return true;
         }
       });
     }
 
-    // Apply sorting
+    // Apply sorting using historical stock for stock field
     filtered.sort((a, b) => {
-      const aValue = a[sortField];
-      const bValue = b[sortField];
+      let aValue, bValue;
+      
+      if (sortField === 'stock') {
+        aValue = a.displayStock;
+        bValue = b.displayStock;
+      } else {
+        aValue = a[sortField];
+        bValue = b[sortField];
+      }
       
       if (sortDirection === 'asc') {
         return aValue < bValue ? -1 : aValue > bValue ? 1 : 0;
@@ -334,7 +416,7 @@ export default function StockModule({
 
     return filtered;
   }, [
-    products, 
+    enhancedProducts, 
     searchTerm, 
     filterCategory, 
     filterStatus, 
@@ -388,16 +470,22 @@ export default function StockModule({
   const registers = [...new Set(registerSales.map(s => s.register))];
   const sellers = [...new Set(registerSales.map(s => s.seller))];
 
-  // Calculate statistics from filtered products
+  // Calculate statistics from filtered products using historical data
   const statistics = useMemo(() => {
     const totalProducts = filteredProducts.length;
-    const totalStock = filteredProducts.reduce((sum, product) => sum + product.stock, 0);
-    const totalSold = filteredProducts.reduce((sum, product) => sum + (product.quantitySold || 0), 0);
-    const outOfStock = filteredProducts.filter(product => product.stock === 0).length;
+    const totalStock = filteredProducts.reduce((sum, product) => sum + product.displayStock, 0);
+    const totalSold = filteredProducts.reduce((sum, product) => sum + product.displayQuantitySold, 0);
+    const outOfStock = filteredProducts.filter(product => product.displayStock === 0).length;
     const lowStock = filteredProducts.filter(product => 
-      product.stock > 0 && product.stock <= product.minStock
+      product.displayStock > 0 && product.displayStock <= product.minStock
     ).length;
     const totalRevenue = Array.from(productRevenues.values()).reduce((sum, revenue) => sum + revenue, 0);
+
+    // Additional historical context
+    const isHistoricalView = filteredProducts.some(p => p.isHistoricalView);
+    const dateInfo = isHistoricalView ? 
+      (dateRange.end ? `au ${format(new Date(dateRange.end), 'dd/MM/yyyy')}` :
+       dateRange.start ? `à partir du ${format(new Date(dateRange.start), 'dd/MM/yyyy')}` : '') : '';
 
     return {
       totalProducts,
@@ -405,9 +493,11 @@ export default function StockModule({
       totalSold,
       outOfStock,
       lowStock,
-      totalRevenue
+      totalRevenue,
+      isHistoricalView,
+      dateInfo
     };
-  }, [filteredProducts, productRevenues]);
+  }, [filteredProducts, productRevenues, dateRange]);
 
   const handleSort = (field: keyof Product) => {
     if (sortField === field) {
@@ -423,14 +513,21 @@ export default function StockModule({
       Name: product.name,
       Category: product.category,
       Price: product.price,
-      Stock: product.stock,
+      Stock: product.displayStock,
+      'Current Stock': product.originalStock,
       'Min Stock': product.minStock,
-      'Quantity Sold': product.quantitySold || 0,
+      'Quantity Sold': product.displayQuantitySold,
+      'Total Sold': product.originalQuantitySold,
       'Revenue': productRevenues.get(product.id) || 0,
+      'Historical View': product.isHistoricalView ? 'Yes' : 'No',
       Description: product.description || ''
     }));
     
-    exportToExcel(exportData, `stock-${format(new Date(), 'yyyy-MM-dd')}`);
+    const dateStr = statistics.isHistoricalView && dateRange.end ? 
+      `${format(new Date(dateRange.end), 'yyyy-MM-dd')}` : 
+      format(new Date(), 'yyyy-MM-dd');
+    
+    exportToExcel(exportData, `stock-${dateStr}`);
   };
 
   // Check if any sales-based filters are active
@@ -687,6 +784,28 @@ export default function StockModule({
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Historical Context Banner */}
+      {statistics.isHistoricalView && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-gradient-to-r from-blue-500/10 to-blue-600/10 backdrop-blur-xl 
+                     border border-blue-500/20 rounded-xl p-4"
+        >
+          <div className="flex items-center space-x-3">
+            <Calendar className="w-6 h-6 text-blue-400" />
+            <div>
+              <h3 className="text-blue-400 font-semibold text-lg">
+                Vue historique du stock
+              </h3>
+              <p className="text-gray-400 text-sm">
+                Affichage des données {statistics.dateInfo}. Les valeurs de stock et quantités vendues correspondent à cette période.
+              </p>
+            </div>
+          </div>
+        </motion.div>
+      )}
 
       {/* Statistics Cards with new Revenue card */}
       <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
@@ -1009,6 +1128,9 @@ export default function StockModule({
               className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white
                          focus:outline-none focus:border-cyan-500"
             />
+            <p className="text-xs text-gray-500 mt-1">
+              Filtre les ventes à partir de cette date
+            </p>
           </div>
           
           <div>
@@ -1022,6 +1144,9 @@ export default function StockModule({
               className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white
                          focus:outline-none focus:border-cyan-500"
             />
+            <p className="text-xs text-gray-500 mt-1">
+              Calcule le stock à cette date (vue historique)
+            </p>
           </div>
         </div>
 
@@ -1242,21 +1367,40 @@ export default function StockModule({
                   </td>
                   <td className="py-4 px-4">
                     <div className="flex items-center space-x-2">
-                      <span className={`font-semibold ${
-                        product.stock === 0 ? 'text-red-400' :
-                        product.stock <= product.minStock ? 'text-orange-400' :
-                        'text-white'
-                      }`}>
-                        {product.stock}
-                      </span>
-                      {product.stock <= product.minStock && (
+                      <div className="flex flex-col">
+                        <span className={`font-semibold ${
+                          product.displayStock === 0 ? 'text-red-400' :
+                          product.displayStock <= product.minStock ? 'text-orange-400' :
+                          'text-white'
+                        }`}>
+                          {product.displayStock}
+                        </span>
+                        {product.isHistoricalView && product.displayStock !== product.originalStock && (
+                          <span className="text-xs text-gray-400">
+                            (actuel: {product.originalStock})
+                          </span>
+                        )}
+                      </div>
+                      {product.displayStock <= product.minStock && (
                         <AlertTriangle className="w-4 h-4 text-orange-400" />
+                      )}
+                      {product.isHistoricalView && (
+                        <Calendar className="w-4 h-4 text-blue-400" title="Vue historique" />
                       )}
                     </div>
                   </td>
                   <td className="py-4 px-4 text-gray-300">{product.minStock}</td>
-                  <td className="py-4 px-4 text-cyan-400 font-medium">
-                    {product.quantitySold || 0}
+                  <td className="py-4 px-4">
+                    <div className="flex flex-col">
+                      <span className="text-cyan-400 font-medium">
+                        {product.displayQuantitySold}
+                      </span>
+                      {product.isHistoricalView && product.displayQuantitySold !== product.originalQuantitySold && (
+                        <span className="text-xs text-gray-400">
+                          (total: {product.originalQuantitySold})
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="py-4 px-4 text-purple-400 font-semibold">
                     {formatCurrency(productRevenues.get(product.id) || 0)}
