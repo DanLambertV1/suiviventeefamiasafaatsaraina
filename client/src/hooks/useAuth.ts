@@ -166,6 +166,30 @@ export function useAuthState(): AuthContextType {
       console.error('Login error:', error);
       setAuthState(prev => ({ ...prev, isLoading: false }));
       
+      // Demo login option for testing
+      if (email === 'demo@test.com' && password === 'demo123') {
+        const demoUser: User = {
+          id: 'demo-user-id',
+          name: 'Demo User',
+          email: 'demo@test.com',
+          role: 'admin',
+          lastLogin: new Date(),
+          sessionStart: new Date()
+        };
+        
+        setAuthState({
+          user: demoUser,
+          isAuthenticated: true,
+          isLoading: false,
+          sessionDuration: '0m'
+        });
+        
+        // Store demo session
+        localStorage.setItem('globalva_user_session', JSON.stringify(demoUser));
+        
+        return true;
+      }
+      
       // Handle specific Firebase auth errors
       if (error.code === 'auth/user-not-found') {
         throw new Error('Aucun compte trouvé avec cette adresse email');

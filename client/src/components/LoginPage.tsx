@@ -70,6 +70,24 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
     return true;
   };
 
+  const handleDemoLogin = async () => {
+    setIsLoading(true);
+    setAuthError('');
+    
+    try {
+      const success = await login('demo@test.com', 'demo123');
+      if (success) {
+        onLoginSuccess();
+      } else {
+        setAuthError('Demo login failed');
+      }
+    } catch (error: any) {
+      setAuthError(error.message || 'Demo login failed');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
@@ -430,6 +448,33 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
                     </>
                   )}
                 </button>
+
+                {/* Demo Login Button (Login Only) */}
+                {!isSignUp && (
+                  <div className="relative">
+                    <div className="absolute inset-0 flex items-center">
+                      <div className="w-full border-t border-slate-600"></div>
+                    </div>
+                    <div className="relative flex justify-center text-sm">
+                      <span className="bg-slate-800 px-4 text-slate-400">or</span>
+                    </div>
+                  </div>
+                )}
+
+                {!isSignUp && (
+                  <button
+                    type="button"
+                    onClick={handleDemoLogin}
+                    disabled={isLoading}
+                    className="w-full bg-gradient-to-r from-green-500 to-teal-500 text-white font-semibold 
+                               py-3 px-6 rounded-xl hover:from-green-600 hover:to-teal-600 
+                               disabled:opacity-50 disabled:cursor-not-allowed
+                               transition-all duration-200 flex items-center justify-center space-x-2"
+                  >
+                    <CheckCircle className="w-4 h-4" />
+                    <span>Demo Login</span>
+                  </button>
+                )}
               </motion.form>
             )}
           </AnimatePresence>
