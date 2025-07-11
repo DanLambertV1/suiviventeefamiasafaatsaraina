@@ -78,12 +78,26 @@ export function useFirebaseData() {
       console.log(`📊 Loaded ${sales.length} sales from Firebase`);
       setRegisterSales(sales);
       calculateDashboardStats(sales);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Erreur lors du chargement des ventes:', error);
-      // Fallback to mock data
-      const mockSales = generateMockSales();
-      setRegisterSales(mockSales);
-      calculateDashboardStats(mockSales);
+      
+      // Better error handling without falling back to mock data
+      if (error?.code === 'permission-denied') {
+        console.error('🔐 Firebase permission denied - Check authentication and security rules');
+        // Set empty array instead of mock data
+        setRegisterSales([]);
+        calculateDashboardStats([]);
+      } else if (error?.code === 'unavailable') {
+        console.error('🌐 Firebase service unavailable - Check network connection');
+        setRegisterSales([]);
+        calculateDashboardStats([]);
+      } else {
+        console.error('❌ Unexpected error loading sales:', error);
+        // Fallback to mock data only if it's a genuine connection issue
+        const mockSales = generateMockSales();
+        setRegisterSales(mockSales);
+        calculateDashboardStats(mockSales);
+      }
     }
   };
 
@@ -112,9 +126,22 @@ export function useFirebaseData() {
 
       console.log(`📦 Loaded ${products.length} products from Firebase`);
       setProducts(products);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Erreur lors du chargement des produits:', error);
-      setProducts(generateMockProducts());
+      
+      // Better error handling without falling back to mock data
+      if (error?.code === 'permission-denied') {
+        console.error('🔐 Firebase permission denied - Check authentication and security rules');
+        // Set empty array instead of mock data, but provide some basic products for matching
+        setProducts(generateBasicProducts());
+      } else if (error?.code === 'unavailable') {
+        console.error('🌐 Firebase service unavailable - Check network connection');
+        setProducts(generateBasicProducts());
+      } else {
+        console.error('❌ Unexpected error loading products:', error);
+        // Fallback to mock data only if it's a genuine connection issue
+        setProducts(generateMockProducts());
+      }
     }
   };
 
@@ -126,6 +153,8 @@ export function useFirebaseData() {
       .replace(/\s+/g, ' ') // Normalize spaces
       .replace(/[^\w\s]/g, '') // Remove special characters except spaces
       .replace(/\b(100s?|20s?|25s?)\b/g, '') // Remove common suffixes like 100S, 20, 25
+      .replace(/\b(1l|1,5l|0,5l|25cl|33cl|50cl)\b/g, '') // Remove volume indicators
+      .replace(/\b(bio|light|zero|max|plus)\b/g, '') // Remove common variants
       .trim();
   };
 
@@ -137,6 +166,13 @@ export function useFirebaseData() {
     let match = products.find(product => 
       normalizeProductName(product.name) === normalizedSaleName &&
       product.category.toLowerCase().trim() === normalizedSaleCategory
+    );
+
+    if (match) return match;
+
+    // Try exact match ignoring category (for products with wrong categories)
+    match = products.find(product => 
+      normalizeProductName(product.name) === normalizedSaleName
     );
 
     if (match) return match;
@@ -155,24 +191,32 @@ export function useFirebaseData() {
 
     if (match) return match;
 
+    // Try partial match ignoring category
+    match = products.find(product => {
+      const normalizedProductName = normalizeProductName(product.name);
+      return (
+        normalizedProductName.includes(normalizedSaleName) || 
+        normalizedSaleName.includes(normalizedProductName)
+      );
+    });
+
+    if (match) return match;
+
     // Try fuzzy match - check if main words are present
     match = products.find(product => {
       const normalizedProductName = normalizeProductName(product.name);
-      const normalizedProductCategory = product.category.toLowerCase().trim();
-      
-      if (normalizedProductCategory !== normalizedSaleCategory) return false;
       
       const saleWords = normalizedSaleName.split(' ').filter(word => word.length > 2);
       const productWords = normalizedProductName.split(' ').filter(word => word.length > 2);
       
-      // Check if at least 70% of words match
+      // Check if at least 50% of words match (reduced threshold)
       const matchingWords = saleWords.filter(saleWord => 
         productWords.some(productWord => 
           productWord.includes(saleWord) || saleWord.includes(productWord)
         )
       );
       
-      return matchingWords.length >= Math.ceil(saleWords.length * 0.7);
+      return matchingWords.length >= Math.ceil(saleWords.length * 0.5);
     });
 
     return match || null;
@@ -463,8 +507,20 @@ export function useFirebaseData() {
       } else {
         console.log('ℹ️ No product quantity changes to save');
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('❌ Error updating product quantities in Firebase:', error);
+      
+      // Handle specific Firebase errors
+      if (error?.code === 'permission-denied') {
+        console.error('🔐 Firebase permission denied - User may not be authenticated or lacks permissions');
+        // Don't throw, just log the error to prevent app crashes
+      } else if (error?.code === 'unauthenticated') {
+        console.error('🔐 Firebase authentication required - User needs to login');
+      } else if (error?.code === 'unavailable') {
+        console.error('🌐 Firebase service unavailable - Check network connection');
+      } else {
+        console.error('❌ Unexpected Firebase error:', error);
+      }
     }
 
     // Regenerate alerts after stock changes
@@ -1075,7 +1131,7 @@ function generateMockSales(): RegisterSale[] {
   });
 }
 
-function generateMockProducts(): Product[] {
+function generateBasicProducts(): Product[] {
   return [
     {
       id: '1',
@@ -1131,6 +1187,65 @@ function generateMockProducts(): Product[] {
       quantitySold: 15,
       minStock: 15,
       description: 'Lait UHT demi-écrémé 1L'
+    },
+    {
+      id: '6',
+      name: 'Coca-Cola',
+      category: 'Boisson',
+      price: 2.80,
+      stock: 30,
+      initialStock: 35,
+      quantitySold: 5,
+      minStock: 5,
+      description: 'Coca-Cola'
+    },
+    {
+      id: '7',
+      name: 'Yaourt nature',
+      category: 'Alimentaire',
+      price: 1.50,
+      stock: 25,
+      initialStock: 30,
+      quantitySold: 5,
+      minStock: 10,
+      description: 'Yaourt nature'
+    },
+    {
+      id: '8',
+      name: 'Pommes',
+      category: 'Fruits',
+      price: 3.20,
+      stock: 40,
+      initialStock: 50,
+      quantitySold: 10,
+      minStock: 15,
+      description: 'Pommes fraîches'
+    },
+    {
+      id: '9',
+      name: 'Bananes',
+      category: 'Fruits',
+      price: 2.80,
+      stock: 35,
+      initialStock: 45,
+      quantitySold: 10,
+      minStock: 12,
+      description: 'Bananes fraîches'
+    },
+    {
+      id: '10',
+      name: 'Eau minérale',
+      category: 'Boisson',
+      price: 1.10,
+      stock: 48,
+      initialStock: 60,
+      quantitySold: 12,
+      minStock: 20,
+      description: 'Eau minérale'
     }
   ];
+}
+
+function generateMockProducts(): Product[] {
+  return generateBasicProducts();
 }
