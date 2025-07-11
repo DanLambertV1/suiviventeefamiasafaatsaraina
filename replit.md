@@ -110,17 +110,24 @@ Preferred communication style: Simple, everyday language.
 - Firebase emulator for local development
 - Environment variables for configuration
 
-### Production Build
-- Vite builds optimized frontend bundle
-- ESBuild compiles backend to single file
-- Static assets served from Express
-- Firebase hosting for production deployment
+### Production Build - Netlify
+- Vite builds optimized frontend bundle for static hosting
+- Client-only deployment with Firebase backend
+- SPA routing with proper redirects
+- Optimized assets with caching headers
 
 ### Environment Configuration
 - Development: Local servers with hot reload
-- Production: Optimized builds with Firebase backend
-- Database: Firestore for production, PostgreSQL as backup option
+- Production: Netlify static hosting with Firebase backend
+- Database: Firestore for production data storage
 - Authentication: Firebase Auth with custom user roles
+
+### Netlify Configuration
+- Build Command: `npm run build`
+- Publish Directory: `dist/public`
+- Node Version: 20
+- SPA routing redirects configured
+- Security headers and performance optimizations
 
 ### Key Features
 - Real-time data synchronization
