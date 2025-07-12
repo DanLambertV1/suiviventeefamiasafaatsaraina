@@ -210,13 +210,14 @@ export function useFirebaseData() {
       const productWords = normalizedProductName.split(' ').filter(word => word.length > 2);
       
       // Check if at least 50% of words match (reduced threshold)
+      // Increase threshold to 70% to avoid incorrect matches
       const matchingWords = saleWords.filter(saleWord => 
         productWords.some(productWord => 
           productWord.includes(saleWord) || saleWord.includes(productWord)
         )
       );
       
-      return matchingWords.length >= Math.ceil(saleWords.length * 0.5);
+      return matchingWords.length >= Math.ceil(saleWords.length * 0.7);
     });
 
     return match || null;
@@ -429,10 +430,12 @@ export function useFirebaseData() {
         
         if (existing) {
           existing.quantity += sale.quantity; // ✅ EXACT addition of sale quantities
+          existing.sales.push(sale); // Track the actual sales for history
         } else {
           salesByProduct.set(productKey, {
             quantity: sale.quantity, // ✅ EXACT quantity from sales
-            matchedProduct
+            matchedProduct,
+            sales: [sale] // Initialize sales array with this sale
           });
         }
         
@@ -460,11 +463,55 @@ export function useFirebaseData() {
       // Calculate final stock: Initial - EXACT Sold
       const finalStock = Math.max(0, initialStock - exactQuantitySold);
       
+      // Generate stock history entries from sales if not already present
+      let stockHistory = product.stockHistory || [];
+      
+      // Add initial stock entry if not present
+      if (stockHistory.length === 0 && initialStock > 0) {
+        stockHistory.push({
+          date: new Date('2024-01-01'), // Default initial date
+          quantity: initialStock,
+          type: 'initial',
+          reference: `initial-${product.id}`
+        });
+      }
+      
+      // Add sale entries if they don't exist already
+      if (salesData && salesData.sales.length > 0) {
+        // Get existing sale references to avoid duplicates
+        const existingReferences = new Set(
+          stockHistory
+            .filter(entry => entry.type === 'sale' && entry.reference)
+            .map(entry => entry.reference)
+        );
+        
+        // Add missing sale entries
+        salesData.sales.forEach(sale => {
+          const saleReference = `sale-${sale.id}`;
+          if (!existingReferences.has(saleReference)) {
+            stockHistory.push({
+              date: sale.date,
+              quantity: -sale.quantity, // Negative for sales
+              type: 'sale',
+              reference: saleReference
+            });
+          }
+        });
+        
+        // Sort history by date
+        stockHistory.sort((a, b) => {
+          const dateA = a.date instanceof Date ? a.date : new Date(a.date);
+          const dateB = b.date instanceof Date ? b.date : new Date(b.date);
+          return dateA.getTime() - dateB.getTime();
+        });
+      }
+      
       const updated = {
         ...product,
         initialStock,
         quantitySold: exactQuantitySold, // ✅ EXACT quantity from sales
-        stock: finalStock
+        stock: finalStock,
+        stockHistory
       };
 
       // Log significant changes
@@ -488,13 +535,22 @@ export function useFirebaseData() {
         if (originalProduct && 
             (originalProduct.quantitySold !== updatedProduct.quantitySold || 
              originalProduct.stock !== updatedProduct.stock ||
-             originalProduct.initialStock !== updatedProduct.initialStock)) {
+             originalProduct.initialStock !== updatedProduct.initialStock ||
+             JSON.stringify(originalProduct.stockHistory) !== JSON.stringify(updatedProduct.stockHistory))) {
           
           const productRef = doc(db, COLLECTIONS.PRODUCTS, updatedProduct.id);
+          
+          // Convert Date objects to ISO strings for Firestore
+          const stockHistory = updatedProduct.stockHistory?.map(entry => ({
+            ...entry,
+            date: entry.date instanceof Date ? entry.date.toISOString() : entry.date
+          }));
+          
           batch.update(productRef, {
             quantitySold: updatedProduct.quantitySold, // ✅ EXACT quantity
             stock: updatedProduct.stock,
             initialStock: updatedProduct.initialStock,
+            stockHistory,
             updatedAt: new Date().toISOString()
           });
           hasChanges = true;
@@ -758,6 +814,15 @@ export function useFirebaseData() {
   const addProduct = async (product: Omit<Product, 'id'>) => {
     try {
       const productsCollection = collection(db, COLLECTIONS.PRODUCTS);
+      
+      // Initialize stock history with initial stock entry
+      const stockHistory = [{
+        date: new Date().toISOString(),
+        quantity: product.stock,
+        type: 'initial',
+        reference: `initial-${Date.now()}`
+      }];
+      
       const productData: Omit<FirestoreProduct, 'id'> = {
         name: product.name,
         category: product.category,
@@ -767,6 +832,7 @@ export function useFirebaseData() {
         quantitySold: 0, // Always start with 0, will be calculated from sales
         minStock: product.minStock,
         description: product.description || '',
+        stockHistory,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
       };
@@ -784,7 +850,13 @@ export function useFirebaseData() {
         ...product,
         id: Math.random().toString(36).substr(2, 9),
         initialStock: product.initialStock || product.stock,
-        quantitySold: 0
+        quantitySold: 0,
+        stockHistory: [{
+          date: new Date(),
+          quantity: product.stock,
+          type: 'initial',
+          reference: `initial-${Date.now()}`
+        }]
       };
       setProducts(prev => [...prev, newProduct]);
       
@@ -796,21 +868,68 @@ export function useFirebaseData() {
   const updateProduct = async (id: string, updates: Partial<Product>) => {
     try {
       const productRef = doc(db, COLLECTIONS.PRODUCTS, id);
-      const updateData: Partial<FirestoreProduct> = {
-        ...updates,
-        updatedAt: new Date().toISOString()
-      };
+      
+      // Prepare update data
+      const updateData: Partial<FirestoreProduct> = { ...updates };
+      
+      // Add stock history entry if stock is being updated
+      if (updates.stock !== undefined) {
+        const product = products.find(p => p.id === id);
+        if (product) {
+          const stockDifference = updates.stock - product.stock;
+          
+          // Only add history entry if stock actually changed
+          if (stockDifference !== 0) {
+            const historyEntry = {
+              date: new Date().toISOString(),
+              quantity: stockDifference,
+              type: stockDifference > 0 ? 'addition' : 'adjustment',
+              reference: `manual-${Date.now()}`
+            };
+            
+            // Initialize history array if it doesn't exist
+            const currentHistory = product.stockHistory || [];
+            updateData.stockHistory = [...currentHistory, historyEntry];
+          }
+        }
+      }
+      
+      // Always update the timestamp
+      updateData.updatedAt = new Date().toISOString();
 
       await updateDoc(productRef, updateData);
       
       // Update local state immediately
-      setProducts(prev => prev.map(p => p.id === id ? { ...p, ...updates } : p));
+      setProducts(prev => prev.map(p => {
+        if (p.id === id) {
+          const updatedProduct = { ...p, ...updates };
+          
+          // Also update the stockHistory in local state if it was updated
+          if (updateData.stockHistory) {
+            updatedProduct.stockHistory = updateData.stockHistory.map(entry => ({
+              ...entry,
+              date: typeof entry.date === 'string' ? new Date(entry.date) : entry.date
+            }));
+          }
+          
+          return updatedProduct;
+        }
+        return p;
+      }));
       
       await generateAlerts();
       console.log('✅ Product updated successfully');
     } catch (error) {
       console.error('❌ Error updating product:', error);
-      setProducts(prev => prev.map(p => p.id === id ? { ...p, ...updates } : p));
+      
+      // Fallback update for local state
+      setProducts(prev => prev.map(p => {
+        if (p.id === id) {
+          return { ...p, ...updates };
+        }
+        return p;
+      }));
+      
       await generateAlerts();
     }
   };

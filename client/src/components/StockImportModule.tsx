@@ -216,20 +216,42 @@ export function StockImportModule({
           const oldStock = matchingProduct.stock;
           const newStock = oldStock + importData.quantity;
           
+          // Create a stock history entry for this addition
+          const stockHistoryEntry = {
+            date: importData.date,
+            quantity: importData.quantity,
+            type: 'addition' as const,
+            reference: `import-${Date.now()}`
+          };
+          
+          // Get current stock history or initialize empty array
+          const currentStockHistory = matchingProduct.stockHistory || [];
+          
           await onUpdateProduct(matchingProduct.id, {
             stock: newStock,
             // Update initialStock if it's not set or if new stock is higher
-            initialStock: Math.max(matchingProduct.initialStock || oldStock, newStock)
+            initialStock: Math.max(matchingProduct.initialStock || oldStock, newStock),
+            // Add the new entry to stock history
+            stockHistory: [...currentStockHistory, stockHistoryEntry]
           });
 
           updated.push({
             product: matchingProduct,
             oldStock,
             newStock,
-            addedQuantity: importData.quantity
+            addedQuantity: importData.quantity,
+            addedDate: importData.date
           });
         } else {
           // Create new product
+          // Initialize stock history with this import
+          const stockHistory = [{
+            date: importData.date,
+            quantity: importData.quantity,
+            type: 'initial' as const,
+            reference: `import-${Date.now()}`
+          }];
+          
           const newProduct: Omit<Product, 'id'> = {
             name: importData.product.trim(),
             category: importData.category.trim(),
@@ -237,6 +259,7 @@ export function StockImportModule({
             stock: importData.quantity,
             initialStock: importData.quantity,
             quantitySold: 0,
+            stockHistory,
             minStock: Math.max(Math.ceil(importData.quantity * 0.2), 5), // 20% of stock or minimum 5
             description: `Créé automatiquement le ${importData.date.toLocaleDateString('fr-FR')}`
           };
@@ -245,7 +268,8 @@ export function StockImportModule({
           
           created.push({
             product: newProduct,
-            quantity: importData.quantity
+            quantity: importData.quantity,
+            date: importData.date
           });
         }
       }

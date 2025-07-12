@@ -25,6 +25,9 @@ import {
   Users,
   Monitor,
   CheckCircle,
+  Calendar,
+  Clock,
+  History
   DollarSign,
   Save
 } from 'lucide-react';
@@ -32,6 +35,7 @@ import { Product, RegisterSale } from '../types';
 import { format, startOfDay, endOfDay, isAfter, isBefore } from 'date-fns';
 import { exportToExcel } from '../utils/excelUtils';
 import { useViewState, useScrollPosition } from '../hooks/useViewState';
+import { format } from 'date-fns';
 import { useLanguage } from '../contexts/LanguageContext';
 
 interface StockModuleProps {
@@ -86,6 +90,7 @@ export default function StockModule({
   const [showEditModal, setShowEditModal] = useState(viewState.modals?.editModal || false);
   const [showDeleteModal, setShowDeleteModal] = useState(viewState.modals?.deleteModal || false);
   const [showImportModal, setShowImportModal] = useState(viewState.modals?.importModal || false);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -1369,6 +1374,18 @@ export default function StockModule({
                     <div className="flex items-center space-x-2">
                       <div className="flex flex-col">
                         <span className={`font-semibold ${
+                        <button 
+                          onClick={() => {
+                            setEditingProduct(product);
+                            setShowHistoryModal(true);
+                          }}
+                          className="p-2 bg-purple-500/20 text-purple-400 rounded-lg hover:bg-purple-500/30 
+                                     transition-all duration-200"
+                          title="Historique du stock"
+                        >
+                          <History className="w-4 h-4" />
+                        </button>
+                        
                           product.displayStock === 0 ? 'text-red-400' :
                           product.displayStock <= product.minStock ? 'text-orange-400' :
                           'text-white'
@@ -1702,4 +1719,141 @@ export default function StockModule({
       </AnimatePresence>
     </div>
   );
+    {/* Stock History Modal */}
+    <AnimatePresence>
+      {showHistoryModal && editingProduct && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 20 }}
+            className="bg-gray-800 border border-gray-700 rounded-2xl p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto"
+          >
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 bg-purple-500/20 rounded-full flex items-center justify-center">
+                  <History className="w-5 h-5 text-purple-400" />
+                </div>
+                <div>
+                  <h3 className="text-xl font-semibold text-white">Historique du Stock</h3>
+                  <p className="text-gray-400 text-sm">{editingProduct.name} - {editingProduct.category}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowHistoryModal(false)}
+                className="text-gray-400 hover:text-white transition-colors duration-200"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+
+            {/* Stock Summary */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+              <div className="bg-blue-500/20 border border-blue-500/30 rounded-xl p-4">
+                <div className="flex items-center space-x-2 mb-2">
+                  <Package className="w-5 h-5 text-blue-400" />
+                  <span className="text-blue-400 font-medium">Stock Actuel</span>
+                </div>
+                <p className="text-2xl font-bold text-white">{editingProduct.stock}</p>
+                <p className="text-blue-400 text-sm mt-1">unités disponibles</p>
+              </div>
+              
+              <div className="bg-green-500/20 border border-green-500/30 rounded-xl p-4">
+                <div className="flex items-center space-x-2 mb-2">
+                  <Plus className="w-5 h-5 text-green-400" />
+                  <span className="text-green-400 font-medium">Stock Initial</span>
+                </div>
+                <p className="text-2xl font-bold text-white">{editingProduct.initialStock || 0}</p>
+                <p className="text-green-400 text-sm mt-1">unités au départ</p>
+              </div>
+              
+              <div className="bg-red-500/20 border border-red-500/30 rounded-xl p-4">
+                <div className="flex items-center space-x-2 mb-2">
+                  <ArrowUpDown className="w-5 h-5 text-red-400" />
+                  <span className="text-red-400 font-medium">Quantité Vendue</span>
+                </div>
+                <p className="text-2xl font-bold text-white">{editingProduct.quantitySold || 0}</p>
+                <p className="text-red-400 text-sm mt-1">unités vendues</p>
+              </div>
+            </div>
+
+            {/* Stock History Table */}
+            <div className="bg-gray-700/30 rounded-xl p-4 mb-6">
+              <h4 className="text-white font-medium mb-3">Historique des Mouvements</h4>
+              
+              {editingProduct.stockHistory && editingProduct.stockHistory.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="border-b border-gray-600">
+                        <th className="text-left py-2 px-4 text-gray-400">Date</th>
+                        <th className="text-left py-2 px-4 text-gray-400">Type</th>
+                        <th className="text-right py-2 px-4 text-gray-400">Quantité</th>
+                        <th className="text-left py-2 px-4 text-gray-400">Référence</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {editingProduct.stockHistory.map((entry, index) => {
+                        const entryDate = entry.date instanceof Date ? entry.date : new Date(entry.date);
+                        
+                        return (
+                          <tr key={index} className="border-b border-gray-600/50">
+                            <td className="py-2 px-4 text-white">
+                              {format(entryDate, 'dd/MM/yyyy HH:mm')}
+                            </td>
+                            <td className="py-2 px-4">
+                              <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                                entry.type === 'initial' ? 'bg-blue-500/20 text-blue-400' :
+                                entry.type === 'addition' ? 'bg-green-500/20 text-green-400' :
+                                entry.type === 'sale' ? 'bg-red-500/20 text-red-400' :
+                                'bg-orange-500/20 text-orange-400'
+                              }`}>
+                                {entry.type === 'initial' ? 'Initial' :
+                                 entry.type === 'addition' ? 'Ajout' :
+                                 entry.type === 'sale' ? 'Vente' :
+                                 'Ajustement'}
+                              </span>
+                            </td>
+                            <td className={`py-2 px-4 text-right font-medium ${
+                              entry.quantity >= 0 ? 'text-green-400' : 'text-red-400'
+                            }`}>
+                              {entry.quantity > 0 ? '+' : ''}{entry.quantity}
+                            </td>
+                            <td className="py-2 px-4 text-gray-300 text-sm">
+                              {entry.reference || '-'}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="text-center py-8 text-gray-400">
+                  <History className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                  <p>Aucun historique disponible pour ce produit</p>
+                  <p className="text-sm mt-1">L'historique sera généré automatiquement lors des mouvements de stock</p>
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end">
+              <button
+                onClick={() => setShowHistoryModal(false)}
+                className="px-6 py-3 bg-gray-600 text-white font-semibold rounded-xl 
+                           hover:bg-gray-500 transition-all duration-200"
+              >
+                Fermer
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+
 }

@@ -5,6 +5,7 @@ export interface StockImportData {
   category: string;
   date: Date;
   quantity: number;
+  reference?: string;
 }
 
 export interface StockImportPreview {

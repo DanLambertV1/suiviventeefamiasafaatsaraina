@@ -38,8 +38,16 @@ export interface Product {
   stock: number; // Final quantity (calculated)
   initialStock?: number; // Initial quantity from stock import
   quantitySold?: number; // Quantity sold from sales import
+  stockHistory?: StockHistoryEntry[]; // History of stock additions
   minStock: number;
   description?: string;
+}
+
+export interface StockHistoryEntry {
+  date: Date;
+  quantity: number;
+  type: 'initial' | 'addition' | 'sale' | 'adjustment';
+  reference?: string;
 }
 
 export interface DashboardStats {
