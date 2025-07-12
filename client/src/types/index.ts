@@ -36,7 +36,8 @@ export interface Product {
   category: string;
   price: number;
   stock: number; // Final quantity (calculated)
-  initialStock?: number; // Initial quantity from stock import
+  initialStock: number; // Initial quantity from stock import
+  initialStockDate: string; // Date from which the initial stock is effective (YYYY-MM-DD)
   quantitySold?: number; // Quantity sold from sales import
   stockHistory?: StockHistoryEntry[]; // History of stock additions
   minStock: number;
