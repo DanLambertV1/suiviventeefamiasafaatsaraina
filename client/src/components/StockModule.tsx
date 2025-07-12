@@ -20,6 +20,8 @@ import { StockTable } from './stock/StockTable';
 import { useFilteredProducts } from '../hooks/useFilteredProducts';
 import { useStockStatistics } from '../hooks/useStockStatistics';
 import { StockImportModule } from './StockImportModule';
+import { ProductEditModal } from './stock/ProductEditModal';
+import { calculateStockFinal } from '../utils/calculateStockFinal';
 
 interface StockModuleProps {
   products: Product[];
@@ -68,6 +70,9 @@ export default function StockModule({
   const [isDeleting, setIsDeleting] = useState(false);
   const [showSyncModal, setShowSyncModal] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [isCreatingProduct, setIsCreatingProduct] = useState(false);
   const [syncResult, setSyncResult] = useState<{
     success: boolean;
     message: string;
@@ -184,8 +189,36 @@ export default function StockModule({
 
   // Edit product handler
   const handleEditProduct = (product: Product) => {
-    // This would typically open a modal or navigate to an edit page
-    console.log('Edit product:', product);
+    setEditingProduct(product);
+    setIsCreatingProduct(false);
+    setShowEditModal(true);
+  };
+  
+  // Create new product handler
+  const handleCreateProduct = () => {
+    setEditingProduct(null);
+    setIsCreatingProduct(true);
+    setShowEditModal(true);
+  };
+  
+  // Save product handler
+  const handleSaveProduct = async (productData: Product | Omit<Product, 'id'>) => {
+    try {
+      if ('id' in productData) {
+        // Update existing product
+        await onUpdateProduct(productData.id, productData);
+      } else {
+        // Create new product
+        await onAddProduct(productData);
+      }
+      
+      setShowEditModal(false);
+      setEditingProduct(null);
+      setIsCreatingProduct(false);
+      onRefreshData();
+    } catch (error) {
+      console.error('Error saving product:', error);
+    }
   };
 
   // Delete product handler
@@ -255,6 +288,16 @@ export default function StockModule({
         </div>
         
         <div className="flex space-x-3">
+          <button
+            onClick={handleCreateProduct}
+            className="bg-gradient-to-r from-green-500 to-green-600 text-white font-semibold 
+                       py-3 px-6 rounded-xl hover:from-green-600 hover:to-green-700 
+                       transition-all duration-200 flex items-center space-x-2"
+          >
+            <Plus className="w-5 h-5" />
+            <span>Ajouter</span>
+          </button>
+          
           <button
             onClick={onRefreshData}
             className="bg-gradient-to-r from-blue-500 to-blue-600 text-white font-semibold 
@@ -433,6 +476,7 @@ export default function StockModule({
               itemsPerPage={itemsPerPage}
               handleItemsPerPageChange={handleItemsPerPageChange}
               totalFilteredProducts={filteredProducts.length}
+              registerSales={registerSales}
             />
           </motion.div>
         ) : (
@@ -452,6 +496,22 @@ export default function StockModule({
           </motion.div>
         )}
       </AnimatePresence>
+      
+      {/* Product Edit Modal */}
+      {showEditModal && (
+        <ProductEditModal
+          product={editingProduct}
+          isOpen={showEditModal}
+          onClose={() => {
+            setShowEditModal(false);
+            setEditingProduct(null);
+            setIsCreatingProduct(false);
+          }}
+          onSave={handleSaveProduct}
+          isLoading={false}
+          isNewProduct={isCreatingProduct}
+        />
+      )}
 
       {/* Delete Confirmation Modal */}
       <AnimatePresence>

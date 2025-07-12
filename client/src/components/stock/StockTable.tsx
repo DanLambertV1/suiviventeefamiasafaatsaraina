@@ -9,10 +9,12 @@ import {
   ChevronLeft, 
   ChevronRight,
   Search,
-  AlertTriangle,
-  CheckCircle
+  AlertTriangle, 
+  CheckCircle,
+  Clock
 } from 'lucide-react';
 import { Product } from '../../types';
+import { hasEarlySales } from '../../utils/calculateStockFinal';
 
 interface StockTableProps {
   paginatedProducts: Product[];
@@ -30,6 +32,7 @@ interface StockTableProps {
   itemsPerPage: number;
   handleItemsPerPageChange: (value: number) => void;
   totalFilteredProducts: number;
+  registerSales: any[];
 }
 
 export function StockTable({
@@ -47,7 +50,8 @@ export function StockTable({
   goToPage,
   itemsPerPage,
   handleItemsPerPageChange,
-  totalFilteredProducts
+  totalFilteredProducts,
+  registerSales
 }: StockTableProps) {
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat('fr-FR', {
@@ -236,7 +240,15 @@ export function StockTable({
                     </span>
                   </td>
                   <td className="py-4 px-4 text-gray-300">{formatCurrency(product.price)}</td>
-                  <td className="py-4 px-4 text-center text-white font-medium">{product.stock}</td>
+                  <td className="py-4 px-4 text-center text-white font-medium">
+                    {product.stock}
+                    {hasEarlySales(product, registerSales) && (
+                      <span className="ml-2 inline-flex items-center bg-orange-500/20 text-orange-400 px-2 py-1 rounded-full text-xs">
+                        <Clock className="w-3 h-3 mr-1" />
+                        Stock tardif
+                      </span>
+                    )}
+                  </td>
                   <td className="py-4 px-4 text-center text-gray-300">{product.minStock}</td>
                   <td className="py-4 px-4 text-center text-gray-300">{product.quantitySold || 0}</td>
                   <td className="py-4 px-4">
