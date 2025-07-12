@@ -136,23 +136,30 @@ export const FIRESTORE_SECURITY_RULES = `
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Allow read/write access to all documents for authenticated users
-    // In production, you should implement more restrictive rules
-    match /{document=**} {
-      allow read, write: if true; // Change this in production!
+    // Products collection - allow authenticated users to read/write
+    match /products/{productId} {
+      allow read, write: if request.auth != null;
     }
     
-    // Example of more restrictive rules:
-    // match /products/{productId} {
-    //   allow read: if true;
-    //   allow write: if request.auth != null && request.auth.token.role == 'admin';
-    // }
+    // Register sales collection - allow authenticated users to read/write
+    match /register_sales/{saleId} {
+      allow read, write: if request.auth != null;
+    }
     
-    // match /register_sales/{saleId} {
-    //   allow read: if true;
-    //   allow create: if request.auth != null;
-    //   allow update, delete: if request.auth != null && request.auth.token.role in ['admin', 'manager'];
-    // }
+    // Users collection - users can only access their own data
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Alerts collection - allow authenticated users to read/write
+    match /alerts/{alertId} {
+      allow read, write: if request.auth != null;
+    }
+    
+    // Settings collection - allow authenticated users to read/write
+    match /settings/{settingId} {
+      allow read, write: if request.auth != null;
+    }
   }
 }
 `;

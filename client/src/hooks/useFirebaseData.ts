@@ -1,1370 +1,1859 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { 
-  collection, 
-  addDoc, 
-  updateDoc, 
-  deleteDoc, 
-  doc, 
-  getDocs, 
-  query, 
-  orderBy, 
-  where,
-  onSnapshot,
-  writeBatch,
-  Timestamp
-} from 'firebase/firestore';
-import { db, COLLECTIONS, FirestoreRegisterSale, FirestoreProduct } from '../lib/firebase';
-import { RegisterSale, Product, DashboardStats, Alert } from '../types';
-import { format, subDays, parseISO } from 'date-fns';
+  Plus, 
+  Search, 
+  Edit,
+  Trash2,
+  Filter,
+  Download,
+  ArrowUpDown,
+  Package,
+  AlertTriangle,
+  RefreshCw,
+  X,
+  CheckSquare,
+  Square,
+  ChevronLeft,
+  ChevronRight,
+  MoreHorizontal,
+  Upload,
+  Zap,
+  TrendingUp,
+  TrendingDown,
+  Calendar,
+  Users,
+  Monitor,
+  CheckCircle,
+  Calendar,
+  Clock,
+  History,
+  DollarSign,
+  Save
+} from 'lucide-react';
+import { Product, RegisterSale } from '../types';
+import { format, startOfDay, endOfDay, isAfter, isBefore } from 'date-fns';
+import { exportToExcel } from '../utils/excelUtils';
+import { useViewState, useScrollPosition } from '../hooks/useViewState';
+import { format } from 'date-fns';
+import { useLanguage } from '../contexts/LanguageContext';
 
-export function useFirebaseData() {
-  const [registerSales, setRegisterSales] = useState<RegisterSale[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(null);
-  const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  // Load initial data
-  useEffect(() => {
-    loadInitialData();
-  }, []);
-
-  // ✅ CRITICAL FIX: Recalculate product quantities whenever sales data changes
-  useEffect(() => {
-    if (registerSales.length >= 0 && products.length > 0) { // Changed condition to include 0 sales
-      console.log(`🔄 Sales data changed (${registerSales.length} sales) - triggering stock recalculation...`);
-      recalculateProductQuantities();
-    }
-  }, [registerSales.length, products.length]); // Trigger on both sales and products changes
-
-  const loadInitialData = async () => {
-    setLoading(true);
-    try {
-      await Promise.all([
-        loadRegisterSales(),
-        loadProducts()
-      ]);
-    } catch (error) {
-      console.error('Erreur lors du chargement des données:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const loadRegisterSales = async () => {
-    try {
-      const salesCollection = collection(db, COLLECTIONS.REGISTER_SALES);
-      const salesQuery = query(salesCollection, orderBy('date', 'desc'));
-      
-      const querySnapshot = await getDocs(salesQuery);
-      const sales: RegisterSale[] = [];
-      
-      querySnapshot.forEach((doc) => {
-        const data = doc.data() as FirestoreRegisterSale;
-        sales.push({
-          id: doc.id,
-          product: data.product,
-          category: data.category,
-          register: data.register,
-          date: parseISO(data.date),
-          seller: data.seller,
-          quantity: data.quantity,
-          price: data.price,
-          total: data.total,
-          created_at: data.createdAt ? parseISO(data.createdAt) : new Date()
-        });
-      });
-
-      console.log(`📊 Loaded ${sales.length} sales from Firebase`);
-      setRegisterSales(sales);
-      calculateDashboardStats(sales);
-    } catch (error: any) {
-      console.error('Erreur lors du chargement des ventes:', error);
-      
-      // Better error handling without falling back to mock data
-      if (error?.code === 'permission-denied') {
-        console.error('🔐 Firebase permission denied - Check authentication and security rules');
-        // Set empty array instead of mock data
-        setRegisterSales([]);
-        calculateDashboardStats([]);
-      } else if (error?.code === 'unavailable') {
-        console.error('🌐 Firebase service unavailable - Check network connection');
-        setRegisterSales([]);
-        calculateDashboardStats([]);
-      } else {
-        console.error('❌ Unexpected error loading sales:', error);
-        // Fallback to mock data only if it's a genuine connection issue
-        const mockSales = generateMockSales();
-        setRegisterSales(mockSales);
-        calculateDashboardStats(mockSales);
-      }
-    }
-  };
-
-  const loadProducts = async () => {
-    try {
-      const productsCollection = collection(db, COLLECTIONS.PRODUCTS);
-      const productsQuery = query(productsCollection, orderBy('name'));
-      
-      const querySnapshot = await getDocs(productsQuery);
-      const products: Product[] = [];
-      
-      querySnapshot.forEach((doc) => {
-        const data = doc.data() as FirestoreProduct;
-        products.push({
-          id: doc.id,
-          name: data.name,
-          category: data.category,
-          price: data.price,
-          stock: data.stock,
-          initialStock: data.initialStock || data.stock,
-          quantitySold: data.quantitySold || 0,
-          minStock: data.minStock,
-          description: data.description
-        });
-      });
-
-      console.log(`📦 Loaded ${products.length} products from Firebase`);
-      setProducts(products);
-    } catch (error: any) {
-      console.error('Erreur lors du chargement des produits:', error);
-      
-      // Better error handling without falling back to mock data
-      if (error?.code === 'permission-denied') {
-        console.error('🔐 Firebase permission denied - Check authentication and security rules');
-        // Set empty array instead of mock data, but provide some basic products for matching
-        setProducts(generateBasicProducts());
-      } else if (error?.code === 'unavailable') {
-        console.error('🌐 Firebase service unavailable - Check network connection');
-        setProducts(generateBasicProducts());
-      } else {
-        console.error('❌ Unexpected error loading products:', error);
-        // Fallback to mock data only if it's a genuine connection issue
-        setProducts(generateMockProducts());
-      }
-    }
-  };
-
-  // Enhanced product matching function with exact quantity synchronization
-  const normalizeProductName = (name: string): string => {
-    return name
-      .toLowerCase()
-      .trim()
-      .replace(/\s+/g, ' ') // Normalize spaces
-      .replace(/[^\w\s]/g, '') // Remove special characters except spaces
-      .replace(/\b(100s?|20s?|25s?)\b/g, '') // Remove common suffixes like 100S, 20, 25
-      .replace(/\b(1l|1,5l|0,5l|25cl|33cl|50cl)\b/g, '') // Remove volume indicators
-      .replace(/\b(bio|light|zero|max|plus)\b/g, '') // Remove common variants
-      .trim();
-  };
-
-  const findMatchingProduct = (saleName: string, saleCategory: string, products: Product[]): Product | null => {
-    const normalizedSaleName = normalizeProductName(saleName);
-    const normalizedSaleCategory = saleCategory.toLowerCase().trim();
-
-    // Try exact match first
-    let match = products.find(product => 
-      normalizeProductName(product.name) === normalizedSaleName &&
-      product.category.toLowerCase().trim() === normalizedSaleCategory
-    );
-
-    if (match) return match;
-
-    // Try exact match ignoring category (for products with wrong categories)
-    match = products.find(product => 
-      normalizeProductName(product.name) === normalizedSaleName
-    );
-
-    if (match) return match;
-
-    // Try partial match on product name with same category
-    match = products.find(product => {
-      const normalizedProductName = normalizeProductName(product.name);
-      const normalizedProductCategory = product.category.toLowerCase().trim();
-      
-      return (
-        normalizedProductCategory === normalizedSaleCategory &&
-        (normalizedProductName.includes(normalizedSaleName) || 
-         normalizedSaleName.includes(normalizedProductName))
-      );
-    });
-
-    if (match) return match;
-
-    // Try partial match ignoring category
-    match = products.find(product => {
-      const normalizedProductName = normalizeProductName(product.name);
-      return (
-        normalizedProductName.includes(normalizedSaleName) || 
-        normalizedSaleName.includes(normalizedProductName)
-      );
-    });
-
-    if (match) return match;
-
-    // Try fuzzy match - check if main words are present
-    match = products.find(product => {
-      const normalizedProductName = normalizeProductName(product.name);
-      
-      const saleWords = normalizedSaleName.split(' ').filter(word => word.length > 2);
-      const productWords = normalizedProductName.split(' ').filter(word => word.length > 2);
-      
-      // Check if at least 50% of words match (reduced threshold)
-      // Increase threshold to 70% to avoid incorrect matches
-      const matchingWords = saleWords.filter(saleWord => 
-        productWords.some(productWord => 
-          productWord.includes(saleWord) || saleWord.includes(productWord)
-        )
-      );
-      
-      return matchingWords.length >= Math.ceil(saleWords.length * 0.7);
-    });
-
-    return match || null;
-  };
-
-  // ✅ NEW: Auto-sync products from sales data
-  const autoSyncProductsFromSales = async (): Promise<{
+interface StockModuleProps {
+  products: Product[];
+  registerSales: RegisterSale[];
+  loading: boolean;
+  onAddProduct: (product: Omit<Product, 'id'>) => Promise<void>;
+  onAddProducts: (products: Omit<Product, 'id'>[]) => Promise<void>;
+  onUpdateProduct: (id: string, updates: Partial<Product>) => Promise<void>;
+  onDeleteProduct: (id: string) => Promise<void>;
+  onDeleteProducts: (productIds: string[]) => Promise<boolean>;
+  onRefreshData: () => void;
+  autoSyncProductsFromSales: () => Promise<{
     created: Product[];
     summary: string;
-  }> => {
-    console.log('🔄 Starting auto-sync of products from sales data...');
-    
-    if (registerSales.length === 0) {
-      console.log('⚠️ No sales data available for sync');
-      return { created: [], summary: 'Aucune donnée de vente disponible pour la synchronisation.' };
-    }
-
-    // Step 1: Analyze all unique products in sales
-    const salesProductMap = new Map<string, {
-      name: string;
-      category: string;
-      totalQuantitySold: number;
-      averagePrice: number;
-      firstSaleDate: Date;
-      lastSaleDate: Date;
-      salesCount: number;
-    }>();
-
-    registerSales.forEach(sale => {
-      // Create a unique key for each product-category combination
-      const productKey = `${sale.product.trim().toLowerCase()}|${sale.category.trim().toLowerCase()}`;
-      
-      if (salesProductMap.has(productKey)) {
-        const existing = salesProductMap.get(productKey)!;
-        existing.totalQuantitySold += sale.quantity;
-        existing.averagePrice = (existing.averagePrice * existing.salesCount + sale.price) / (existing.salesCount + 1);
-        existing.salesCount += 1;
-        existing.lastSaleDate = sale.date > existing.lastSaleDate ? sale.date : existing.lastSaleDate;
-        existing.firstSaleDate = sale.date < existing.firstSaleDate ? sale.date : existing.firstSaleDate;
-      } else {
-        salesProductMap.set(productKey, {
-          name: sale.product.trim(),
-          category: sale.category.trim(),
-          totalQuantitySold: sale.quantity,
-          averagePrice: sale.price,
-          firstSaleDate: sale.date,
-          lastSaleDate: sale.date,
-          salesCount: 1
-        });
-      }
-    });
-
-    console.log(`📊 Found ${salesProductMap.size} unique products in sales data`);
-
-    // Step 2: Check which products are missing from stock
-    const missingProducts: Array<{
-      salesData: any;
-      productKey: string;
-    }> = [];
-
-    salesProductMap.forEach((salesData, productKey) => {
-      const matchingProduct = findMatchingProduct(salesData.name, salesData.category, products);
-      
-      if (!matchingProduct) {
-        console.log(`❌ Missing product in stock: "${salesData.name}" (${salesData.category})`);
-        missingProducts.push({ salesData, productKey });
-      } else {
-        console.log(`✅ Product exists in stock: "${salesData.name}" → "${matchingProduct.name}"`);
-      }
-    });
-
-    console.log(`🔍 Found ${missingProducts.length} products missing from stock`);
-
-    if (missingProducts.length === 0) {
-      return { 
-        created: [], 
-        summary: `✅ Tous les produits des ventes (${salesProductMap.size}) existent déjà dans le stock. Aucune synchronisation nécessaire.` 
-      };
-    }
-
-    // Step 3: Create missing products
-    const createdProducts: Product[] = [];
-    const BATCH_SIZE = 200;
-    
-    try {
-      // Process in batches
-      for (let i = 0; i < missingProducts.length; i += BATCH_SIZE) {
-        const batch = missingProducts.slice(i, i + BATCH_SIZE);
-        const writeBatchRef = writeBatch(db);
-        const productsCollection = collection(db, COLLECTIONS.PRODUCTS);
-        
-        batch.forEach(({ salesData }) => {
-          const docRef = doc(productsCollection);
-          
-          // Estimate initial stock based on sales data
-          const estimatedInitialStock = Math.max(salesData.totalQuantitySold, 10); // At least 10 or total sold
-          const currentStock = 0; // Default to 0 since we don't know current inventory
-          const minStock = Math.max(Math.ceil(salesData.totalQuantitySold / 10), 5); // 10% of sold or minimum 5
-          
-          const newProduct: Omit<FirestoreProduct, 'id'> = {
-            name: salesData.name,
-            category: salesData.category,
-            price: Math.round(salesData.averagePrice * 100) / 100, // Round to 2 decimals
-            stock: currentStock,
-            initialStock: estimatedInitialStock,
-            quantitySold: salesData.totalQuantitySold,
-            minStock: minStock,
-            description: `Auto-créé depuis les ventes (${salesData.salesCount} ventes, première: ${salesData.firstSaleDate.toLocaleDateString('fr-FR')})`,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          };
-
-          writeBatchRef.set(docRef, newProduct);
-          
-          // Add to created products list for return
-          createdProducts.push({
-            id: docRef.id,
-            name: newProduct.name,
-            category: newProduct.category,
-            price: newProduct.price,
-            stock: newProduct.stock,
-            initialStock: newProduct.initialStock,
-            quantitySold: newProduct.quantitySold,
-            minStock: newProduct.minStock,
-            description: newProduct.description
-          });
-        });
-        
-        await writeBatchRef.commit();
-        console.log(`✅ Batch ${Math.floor(i / BATCH_SIZE) + 1} committed: ${batch.length} products created`);
-      }
-
-      // Reload products to include the new ones
-      await loadProducts();
-      
-      // Generate summary report
-      const summary = generateSyncSummary(createdProducts, salesProductMap.size);
-      
-      console.log('🎉 Auto-sync completed successfully');
-      return { created: createdProducts, summary };
-      
-    } catch (error) {
-      console.error('❌ Error during auto-sync:', error);
-      throw new Error('Erreur lors de la synchronisation automatique des produits');
-    }
-  };
-
-  // Generate detailed summary report
-  const generateSyncSummary = (createdProducts: Product[], totalSalesProducts: number): string => {
-    const categoryBreakdown = createdProducts.reduce((acc, product) => {
-      acc[product.category] = (acc[product.category] || 0) + 1;
-      return acc;
-    }, {} as { [key: string]: number });
-
-    const totalQuantitySold = createdProducts.reduce((sum, product) => sum + (product.quantitySold || 0), 0);
-    const averagePrice = createdProducts.length > 0 
-      ? createdProducts.reduce((sum, product) => sum + product.price, 0) / createdProducts.length 
-      : 0;
-
-    let summary = `🎉 Synchronisation automatique terminée avec succès !\n\n`;
-    summary += `📊 Résumé de l'analyse :\n`;
-    summary += `• ${totalSalesProducts} produits uniques trouvés dans les ventes\n`;
-    summary += `• ${createdProducts.length} nouveaux produits créés dans le stock\n`;
-    summary += `• ${totalSalesProducts - createdProducts.length} produits existaient déjà\n\n`;
-    
-    if (createdProducts.length > 0) {
-      summary += `📦 Produits créés :\n`;
-      summary += `• Quantité totale vendue : ${totalQuantitySold.toLocaleString()}\n`;
-      summary += `• Prix moyen : ${averagePrice.toFixed(2)} €\n\n`;
-      
-      summary += `📋 Répartition par catégorie :\n`;
-      Object.entries(categoryBreakdown)
-        .sort(([,a], [,b]) => b - a)
-        .forEach(([category, count]) => {
-          summary += `• ${category} : ${count} produit${count > 1 ? 's' : ''}\n`;
-        });
-      
-      summary += `\n✅ Tous les nouveaux produits ont été configurés avec :\n`;
-      summary += `• Stock actuel : 0 (à mettre à jour manuellement)\n`;
-      summary += `• Stock initial : Estimé basé sur les ventes\n`;
-      summary += `• Quantité vendue : Calculée depuis les ventes\n`;
-      summary += `• Prix : Moyenne des prix de vente\n`;
-      summary += `• Stock minimum : Estimé (10% des ventes ou minimum 5)\n`;
-      summary += `• Description : Informations de création automatique\n`;
-    }
-
-    return summary;
-  };
-
-  // ✅ CRITICAL FIX: Enhanced recalculation with exact quantity synchronization
-  const recalculateProductQuantities = async () => {
-    console.log(`🔄 Starting EXACT quantity synchronization with ${registerSales.length} sales and ${products.length} products...`);
-    
-    if (products.length === 0) {
-      console.log('⚠️ No products available for recalculation');
-      return;
-    }
-    
-    // ✅ CRITICAL: Calculate EXACT quantities sold for each product from ALL current sales
-    const salesByProduct = new Map<string, { quantity: number; matchedProduct: Product }>();
-    
-    // Process all current sales to get EXACT quantities
-    registerSales.forEach(sale => {
-      // Find matching product using enhanced matching
-      const matchedProduct = findMatchingProduct(sale.product, sale.category, products);
-      
-      if (matchedProduct) {
-        const productKey = matchedProduct.id; // Use product ID as key for accuracy
-        const existing = salesByProduct.get(productKey);
-        
-        if (existing) {
-          existing.quantity += sale.quantity; // ✅ EXACT addition of sale quantities
-          existing.sales.push(sale); // Track the actual sales for history
-        } else {
-          salesByProduct.set(productKey, {
-            quantity: sale.quantity, // ✅ EXACT quantity from sales
-            matchedProduct,
-            sales: [sale] // Initialize sales array with this sale
-          });
-        }
-        
-        console.log(`📊 Matched sale "${sale.product}" → "${matchedProduct.name}" (+${sale.quantity})`);
-      } else {
-        console.warn(`⚠️ No matching product found for sale: "${sale.product}" (${sale.category})`);
-      }
-    });
-
-    console.log('📊 EXACT Sales quantities by product:', Object.fromEntries(
-      Array.from(salesByProduct.entries()).map(([key, value]) => [
-        value.matchedProduct.name, 
-        value.quantity
-      ])
-    ));
-
-    // ✅ CRITICAL: Update ALL products with EXACT quantities from sales
-    const updatedProducts = products.map(product => {
-      const salesData = salesByProduct.get(product.id);
-      const exactQuantitySold = salesData ? salesData.quantity : 0; // ✅ EXACT quantity or 0
-      
-      // Ensure we have an initial stock value
-      const initialStock = product.initialStock || product.stock + (product.quantitySold || 0);
-      
-      // Calculate final stock: Initial - EXACT Sold
-      const finalStock = Math.max(0, initialStock - exactQuantitySold);
-      
-      // Generate stock history entries from sales if not already present
-      let stockHistory = product.stockHistory || [];
-      
-      // Add initial stock entry if not present
-      if (stockHistory.length === 0 && initialStock > 0) {
-        stockHistory.push({
-          date: new Date('2024-01-01'), // Default initial date
-          quantity: initialStock,
-          type: 'initial',
-          reference: `initial-${product.id}`
-        });
-      }
-      
-      // Add sale entries if they don't exist already
-      if (salesData && salesData.sales.length > 0) {
-        // Get existing sale references to avoid duplicates
-        const existingReferences = new Set(
-          stockHistory
-            .filter(entry => entry.type === 'sale' && entry.reference)
-            .map(entry => entry.reference)
-        );
-        
-        // Add missing sale entries
-        salesData.sales.forEach(sale => {
-          const saleReference = `sale-${sale.id}`;
-          if (!existingReferences.has(saleReference)) {
-            stockHistory.push({
-              date: sale.date,
-              quantity: -sale.quantity, // Negative for sales
-              type: 'sale',
-              reference: saleReference
-            });
-          }
-        });
-        
-        // Sort history by date
-        stockHistory.sort((a, b) => {
-          const dateA = a.date instanceof Date ? a.date : new Date(a.date);
-          const dateB = b.date instanceof Date ? b.date : new Date(b.date);
-          return dateA.getTime() - dateB.getTime();
-        });
-      }
-      
-      const updated = {
-        ...product,
-        initialStock,
-        quantitySold: exactQuantitySold, // ✅ EXACT quantity from sales
-        stock: finalStock,
-        stockHistory
-      };
-
-      // Log significant changes
-      if (product.quantitySold !== exactQuantitySold || product.stock !== finalStock) {
-        console.log(`📦 ${product.name}: Sold ${product.quantitySold || 0} → ${exactQuantitySold} (EXACT), Stock ${product.stock} → ${finalStock}`);
-      }
-
-      return updated;
-    });
-
-    // ✅ CRITICAL: Update local state immediately with EXACT quantities
-    setProducts(updatedProducts);
-
-    // Update Firebase for products that changed using batch operations
-    try {
-      const batch = writeBatch(db);
-      let hasChanges = false;
-
-      updatedProducts.forEach((updatedProduct, index) => {
-        const originalProduct = products[index];
-        if (originalProduct && 
-            (originalProduct.quantitySold !== updatedProduct.quantitySold || 
-             originalProduct.stock !== updatedProduct.stock ||
-             originalProduct.initialStock !== updatedProduct.initialStock ||
-             JSON.stringify(originalProduct.stockHistory) !== JSON.stringify(updatedProduct.stockHistory))) {
-          
-          const productRef = doc(db, COLLECTIONS.PRODUCTS, updatedProduct.id);
-          
-          // Convert Date objects to ISO strings for Firestore
-          const stockHistory = updatedProduct.stockHistory?.map(entry => ({
-            ...entry,
-            date: entry.date instanceof Date ? entry.date.toISOString() : entry.date
-          }));
-          
-          batch.update(productRef, {
-            quantitySold: updatedProduct.quantitySold, // ✅ EXACT quantity
-            stock: updatedProduct.stock,
-            initialStock: updatedProduct.initialStock,
-            stockHistory,
-            updatedAt: new Date().toISOString()
-          });
-          hasChanges = true;
-        }
-      });
-
-      if (hasChanges) {
-        await batch.commit();
-        console.log('✅ EXACT product quantities updated in Firebase');
-      } else {
-        console.log('ℹ️ No product quantity changes to save');
-      }
-    } catch (error: any) {
-      console.error('❌ Error updating product quantities in Firebase:', error);
-      
-      // Handle specific Firebase errors
-      if (error?.code === 'permission-denied') {
-        console.error('🔐 Firebase permission denied - User may not be authenticated or lacks permissions');
-        // Don't throw, just log the error to prevent app crashes
-      } else if (error?.code === 'unauthenticated') {
-        console.error('🔐 Firebase authentication required - User needs to login');
-      } else if (error?.code === 'unavailable') {
-        console.error('🌐 Firebase service unavailable - Check network connection');
-      } else {
-        console.error('❌ Unexpected Firebase error:', error);
-      }
-    }
-
-    // Regenerate alerts after stock changes
-    await generateAlerts();
-    
-    console.log('✅ EXACT stock synchronization completed - Sales Quantity = Stock Sold');
-  };
-
-  const calculateDashboardStats = (sales: RegisterSale[]) => {
-    const totalSales = sales.length;
-    const totalRevenue = sales.reduce((sum, sale) => sum + sale.total, 0);
-    const activeRegisters = 2;
-
-    // Top produits
-    const productStats = sales.reduce((acc, sale) => {
-      if (!acc[sale.product]) {
-        acc[sale.product] = { quantity: 0, revenue: 0 };
-      }
-      acc[sale.product].quantity += sale.quantity;
-      acc[sale.product].revenue += sale.total;
-      return acc;
-    }, {} as { [key: string]: { quantity: number; revenue: number } });
-
-    const topProducts = Object.entries(productStats)
-      .map(([product, stats]) => ({ product, ...stats }))
-      .sort((a, b) => b.revenue - a.revenue)
-      .slice(0, 5);
-
-    // Top vendeurs
-    const sellerStats = sales.reduce((acc, sale) => {
-      if (!acc[sale.seller]) {
-        acc[sale.seller] = { quantity: 0, revenue: 0 };
-      }
-      acc[sale.seller].quantity += sale.quantity;
-      acc[sale.seller].revenue += sale.total;
-      return acc;
-    }, {} as { [key: string]: { quantity: number; revenue: number } });
-
-    const topSellers = Object.entries(sellerStats)
-      .map(([seller, stats]) => ({ seller, ...stats }))
-      .sort((a, b) => b.revenue - a.revenue)
-      .slice(0, 5);
-
-    // Performance par caisse
-    const registerStats = sales.reduce((acc, sale) => {
-      let normalizedRegister = sale.register;
-      if (sale.register.toLowerCase().includes('1') || sale.register.toLowerCase().includes('caisse1')) {
-        normalizedRegister = 'Register1';
-      } else if (sale.register.toLowerCase().includes('2') || sale.register.toLowerCase().includes('caisse2')) {
-        normalizedRegister = 'Register2';
-      }
-      
-      if (!acc[normalizedRegister]) {
-        acc[normalizedRegister] = { quantity: 0, revenue: 0 };
-      }
-      acc[normalizedRegister].quantity += sale.quantity;
-      acc[normalizedRegister].revenue += sale.total;
-      return acc;
-    }, {} as { [key: string]: { quantity: number; revenue: number } });
-
-    const registerPerformance = Object.entries(registerStats)
-      .map(([register, stats]) => ({ register, ...stats }))
-      .sort((a, b) => b.revenue - a.revenue);
-
-    // Tendance quotidienne
-    const dailyStats = sales.reduce((acc, sale) => {
-      const dateKey = format(sale.date, 'dd/MM');
-      if (!acc[dateKey]) {
-        acc[dateKey] = { quantity: 0, revenue: 0 };
-      }
-      acc[dateKey].quantity += sale.quantity;
-      acc[dateKey].revenue += sale.total;
-      return acc;
-    }, {} as { [key: string]: { quantity: number; revenue: number } });
-
-    const dailyTrend = Object.entries(dailyStats)
-      .map(([date, stats]) => ({ date, ...stats }))
-      .slice(-30);
-
-    setDashboardStats({
-      totalSales,
-      totalRevenue,
-      totalProducts: new Set(sales.map(s => s.product)).size,
-      activeRegisters,
-      topProducts,
-      topSellers,
-      registerPerformance,
-      dailyTrend
-    });
-  };
-
-  // ✅ NEW: Batch import for sales with 200 rows per batch
-  const addRegisterSales = async (sales: RegisterSale[]) => {
-    try {
-      console.log(`🔥 Starting batch import of ${sales.length} sales...`);
-      
-      const BATCH_SIZE = 200;
-      const batches = [];
-      
-      // Split sales into batches of 200
-      for (let i = 0; i < sales.length; i += BATCH_SIZE) {
-        batches.push(sales.slice(i, i + BATCH_SIZE));
-      }
-      
-      console.log(`📦 Split into ${batches.length} batches of max ${BATCH_SIZE} rows each`);
-      
-      // Process each batch
-      for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-        const batch = batches[batchIndex];
-        console.log(`🔄 Processing batch ${batchIndex + 1}/${batches.length} (${batch.length} rows)...`);
-        
-        const writeBatchRef = writeBatch(db);
-        const salesCollection = collection(db, COLLECTIONS.REGISTER_SALES);
-        
-        // Add all sales in this batch to the write batch
-        batch.forEach(sale => {
-          const docRef = doc(salesCollection);
-          const saleData: Omit<FirestoreRegisterSale, 'id'> = {
-            product: sale.product,
-            category: sale.category,
-            register: sale.register,
-            date: sale.date.toISOString(),
-            seller: sale.seller,
-            quantity: sale.quantity,
-            price: sale.price,
-            total: sale.total,
-            createdAt: new Date().toISOString()
-          };
-          writeBatchRef.set(docRef, saleData);
-        });
-        
-        // Commit this batch
-        await writeBatchRef.commit();
-        console.log(`✅ Batch ${batchIndex + 1} committed successfully (${batch.length} sales)`);
-      }
-
-      console.log(`🎉 All ${sales.length} sales imported successfully in ${batches.length} batches`);
-
-      // Reload sales data to ensure synchronization
-      await loadRegisterSales();
-      
-      // The useEffect will automatically trigger recalculateProductQuantities
-      console.log('✅ Sales import completed - EXACT quantities will be recalculated automatically');
-      return true;
-    } catch (error) {
-      console.error('❌ Error adding sales to Firebase:', error);
-      // Fallback: add locally if Firebase is not available
-      const newSales = sales.map(sale => ({
-        ...sale,
-        id: Math.random().toString(36).substr(2, 9)
-      }));
-      
-      setRegisterSales(prev => [...newSales, ...prev]);
-      calculateDashboardStats([...newSales, ...registerSales]);
-      
-      return true;
-    }
-  };
-
-  // ✅ NEW: Batch import for products with 200 rows per batch
-  const addProducts = async (products: Omit<Product, 'id'>[]) => {
-    try {
-      console.log(`🔥 Starting batch import of ${products.length} products...`);
-      
-      const BATCH_SIZE = 200;
-      const batches = [];
-      
-      // Split products into batches of 200
-      for (let i = 0; i < products.length; i += BATCH_SIZE) {
-        batches.push(products.slice(i, i + BATCH_SIZE));
-      }
-      
-      console.log(`📦 Split into ${batches.length} batches of max ${BATCH_SIZE} rows each`);
-      
-      // Process each batch
-      for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-        const batch = batches[batchIndex];
-        console.log(`🔄 Processing batch ${batchIndex + 1}/${batches.length} (${batch.length} rows)...`);
-        
-        const writeBatchRef = writeBatch(db);
-        const productsCollection = collection(db, COLLECTIONS.PRODUCTS);
-        
-        // Add all products in this batch to the write batch
-        batch.forEach(product => {
-          const docRef = doc(productsCollection);
-          const productData: Omit<FirestoreProduct, 'id'> = {
-            name: product.name,
-            category: product.category,
-            price: product.price,
-            stock: product.stock,
-            initialStock: product.initialStock || product.stock,
-            quantitySold: 0, // Always start with 0, will be calculated from sales
-            minStock: product.minStock,
-            description: product.description || '',
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          };
-          writeBatchRef.set(docRef, productData);
-        });
-        
-        // Commit this batch
-        await writeBatchRef.commit();
-        console.log(`✅ Batch ${batchIndex + 1} committed successfully (${batch.length} products)`);
-      }
-
-      console.log(`🎉 All ${products.length} products imported successfully in ${batches.length} batches`);
-
-      // Reload products data
-      await loadProducts();
-      
-      // Recalculate quantities for the new products
-      setTimeout(() => recalculateProductQuantities(), 100);
-      
-      console.log('✅ Products import completed');
-      return true;
-    } catch (error) {
-      console.error('❌ Error adding products to Firebase:', error);
-      
-      // Fallback: add locally if Firebase is not available
-      const newProducts = products.map(product => ({
-        ...product,
-        id: Math.random().toString(36).substr(2, 9),
-        initialStock: product.initialStock || product.stock,
-        quantitySold: 0
-      }));
-      
-      setProducts(prev => [...prev, ...newProducts]);
-      
-      // Recalculate quantities for the new products
-      setTimeout(() => recalculateProductQuantities(), 100);
-      return true;
-    }
-  };
-
-  const addProduct = async (product: Omit<Product, 'id'>) => {
-    try {
-      const productsCollection = collection(db, COLLECTIONS.PRODUCTS);
-      
-      // Initialize stock history with initial stock entry
-      const stockHistory = [{
-        date: new Date().toISOString(),
-        quantity: product.stock,
-        type: 'initial',
-        reference: `initial-${Date.now()}`
-      }];
-      
-      const productData: Omit<FirestoreProduct, 'id'> = {
-        name: product.name,
-        category: product.category,
-        price: product.price,
-        stock: product.stock,
-        initialStock: product.initialStock || product.stock,
-        quantitySold: 0, // Always start with 0, will be calculated from sales
-        minStock: product.minStock,
-        description: product.description || '',
-        stockHistory,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-
-      await addDoc(productsCollection, productData);
-      await loadProducts();
-      
-      // Recalculate quantities for the new product
-      setTimeout(() => recalculateProductQuantities(), 100);
-      
-      console.log('✅ Product added successfully');
-    } catch (error) {
-      console.error('❌ Error adding product:', error);
-      const newProduct: Product = {
-        ...product,
-        id: Math.random().toString(36).substr(2, 9),
-        initialStock: product.initialStock || product.stock,
-        quantitySold: 0,
-        stockHistory: [{
-          date: new Date(),
-          quantity: product.stock,
-          type: 'initial',
-          reference: `initial-${Date.now()}`
-        }]
-      };
-      setProducts(prev => [...prev, newProduct]);
-      
-      // Recalculate quantities for the new product
-      setTimeout(() => recalculateProductQuantities(), 100);
-    }
-  };
-
-  const updateProduct = async (id: string, updates: Partial<Product>) => {
-    try {
-      const productRef = doc(db, COLLECTIONS.PRODUCTS, id);
-      
-      // Prepare update data
-      const updateData: Partial<FirestoreProduct> = { ...updates };
-      
-      // Add stock history entry if stock is being updated
-      if (updates.stock !== undefined) {
-        const product = products.find(p => p.id === id);
-        if (product) {
-          const stockDifference = updates.stock - product.stock;
-          
-          // Only add history entry if stock actually changed
-          if (stockDifference !== 0) {
-            const historyEntry = {
-              date: new Date().toISOString(),
-              quantity: stockDifference,
-              type: stockDifference > 0 ? 'addition' : 'adjustment',
-              reference: `manual-${Date.now()}`
-            };
-            
-            // Initialize history array if it doesn't exist
-            const currentHistory = product.stockHistory || [];
-            updateData.stockHistory = [...currentHistory, historyEntry];
-          }
-        }
-      }
-      
-      // Always update the timestamp
-      updateData.updatedAt = new Date().toISOString();
-
-      await updateDoc(productRef, updateData);
-      
-      // Update local state immediately
-      setProducts(prev => prev.map(p => {
-        if (p.id === id) {
-          const updatedProduct = { ...p, ...updates };
-          
-          // Also update the stockHistory in local state if it was updated
-          if (updateData.stockHistory) {
-            updatedProduct.stockHistory = updateData.stockHistory.map(entry => ({
-              ...entry,
-              date: typeof entry.date === 'string' ? new Date(entry.date) : entry.date
-            }));
-          }
-          
-          return updatedProduct;
-        }
-        return p;
-      }));
-      
-      await generateAlerts();
-      console.log('✅ Product updated successfully');
-    } catch (error) {
-      console.error('❌ Error updating product:', error);
-      
-      // Fallback update for local state
-      setProducts(prev => prev.map(p => {
-        if (p.id === id) {
-          return { ...p, ...updates };
-        }
-        return p;
-      }));
-      
-      await generateAlerts();
-    }
-  };
-
-  // ✅ NEW: Update sale function
-  const updateSale = async (id: string, updates: Partial<RegisterSale>): Promise<boolean> => {
-    try {
-      const saleRef = doc(db, COLLECTIONS.REGISTER_SALES, id);
-      const updateData: Partial<FirestoreRegisterSale> = {};
-      
-      if (updates.product) updateData.product = updates.product;
-      if (updates.category) updateData.category = updates.category;
-      if (updates.register) updateData.register = updates.register;
-      if (updates.date) updateData.date = updates.date.toISOString();
-      if (updates.seller) updateData.seller = updates.seller;
-      if (updates.quantity !== undefined) updateData.quantity = updates.quantity;
-      if (updates.price !== undefined) updateData.price = updates.price;
-      if (updates.total !== undefined) updateData.total = updates.total;
-
-      await updateDoc(saleRef, updateData);
-      
-      // Update local state immediately
-      setRegisterSales(prev => prev.map(s => s.id === id ? { ...s, ...updates } : s));
-      
-      console.log('✅ Sale updated successfully');
-      return true;
-    } catch (error) {
-      console.error('❌ Error updating sale:', error);
-      // Fallback: update locally
-      setRegisterSales(prev => prev.map(s => s.id === id ? { ...s, ...updates } : s));
-      return false;
-    }
-  };
-
-  // ✅ FIXED: Categorize sales function - Now updates the actual category field WITHOUT reload
-  const categorizeSales = async (saleIds: string[], category: string, subcategory?: string): Promise<boolean> => {
-    try {
-      console.log(`🏷️ Categorizing ${saleIds.length} sales with category: ${category}${subcategory ? `, subcategory: ${subcategory}` : ''}`);
-      
-      const BATCH_SIZE = 200;
-      const batches = [];
-      
-      // Split into batches of 200
-      for (let i = 0; i < saleIds.length; i += BATCH_SIZE) {
-        batches.push(saleIds.slice(i, i + BATCH_SIZE));
-      }
-      
-      console.log(`📦 Split into ${batches.length} batches of max ${BATCH_SIZE} rows each`);
-      
-      // Process each batch
-      for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-        const batch = batches[batchIndex];
-        console.log(`🔄 Processing categorization batch ${batchIndex + 1}/${batches.length} (${batch.length} sales)...`);
-        
-        const writeBatchRef = writeBatch(db);
-        
-        batch.forEach(id => {
-          const saleRef = doc(db, COLLECTIONS.REGISTER_SALES, id);
-          
-          // ✅ CRITICAL FIX: Update the actual category field, not just metadata
-          const updateData: Partial<FirestoreRegisterSale> = {
-            category: category, // ✅ This is the key fix - update the actual category field
-            // Also store categorization metadata for tracking
-            category_metadata: {
-              category,
-              subcategory: subcategory || null,
-              categorized_at: new Date().toISOString(),
-              categorized_by: 'user'
-            }
-          };
-          
-          writeBatchRef.update(saleRef, updateData);
-        });
-        
-        await writeBatchRef.commit();
-        console.log(`✅ Categorization batch ${batchIndex + 1} committed successfully (${batch.length} sales)`);
-      }
-      
-      console.log(`🎉 All ${saleIds.length} sales categorized successfully`);
-      
-      // ✅ CRITICAL: Update local state immediately to reflect the changes
-      setRegisterSales(prev => prev.map(sale => 
-        saleIds.includes(sale.id) 
-          ? { ...sale, category: category } // Update the category in local state
-          : sale
-      ));
-      
-      // ✅ CRITICAL: Reload sales data to ensure synchronization with Firestore
-      // BUT DO NOT RELOAD THE ENTIRE APP - just refresh the data
-      console.log('🔄 Reloading sales data to reflect categorization changes...');
-      await loadRegisterSales();
-      
-      console.log('✅ Sales categorization completed successfully');
-      return true;
-    } catch (error) {
-      console.error('❌ Error categorizing sales:', error);
-      
-      // Fallback: update local state only
-      console.log('🔄 Fallback: Updating local state after categorization error...');
-      setRegisterSales(prev => prev.map(sale => 
-        saleIds.includes(sale.id) 
-          ? { ...sale, category: category }
-          : sale
-      ));
-      
-      return false;
-    }
-  };
-
-  const deleteProduct = async (id: string) => {
-    try {
-      const productRef = doc(db, COLLECTIONS.PRODUCTS, id);
-      await deleteDoc(productRef);
-      
-      // Update local state immediately
-      setProducts(prev => prev.filter(p => p.id !== id));
-      
-      await generateAlerts();
-      console.log('✅ Product deleted successfully');
-    } catch (error) {
-      console.error('❌ Error deleting product:', error);
-      setProducts(prev => prev.filter(p => p.id !== id));
-      await generateAlerts();
-    }
-  };
-
-  const deleteProducts = async (productIds: string[]) => {
-    try {
-      const BATCH_SIZE = 200;
-      const batches = [];
-      
-      // Split into batches of 200
-      for (let i = 0; i < productIds.length; i += BATCH_SIZE) {
-        batches.push(productIds.slice(i, i + BATCH_SIZE));
-      }
-      
-      // Process each batch
-      for (const batch of batches) {
-        const writeBatchRef = writeBatch(db);
-        
-        batch.forEach(id => {
-          const productRef = doc(db, COLLECTIONS.PRODUCTS, id);
-          writeBatchRef.delete(productRef);
-        });
-        
-        await writeBatchRef.commit();
-      }
-      
-      // Update local state immediately
-      setProducts(prev => prev.filter(p => !productIds.includes(p.id)));
-      
-      await generateAlerts();
-      console.log(`✅ ${productIds.length} products deleted successfully`);
-      return true;
-    } catch (error) {
-      console.error('❌ Error deleting products:', error);
-      setProducts(prev => prev.filter(p => !productIds.includes(p.id)));
-      await generateAlerts();
-      return false;
-    }
-  };
-
-  // ✅ CRITICAL FIX: Enhanced deleteSales function with guaranteed stock recalculation
-  const deleteSales = async (saleIds: string[]) => {
-    try {
-      console.log(`🗑️ Starting deletion of ${saleIds.length} sales...`);
-      
-      const BATCH_SIZE = 200;
-      const batches = [];
-      
-      // Split into batches of 200
-      for (let i = 0; i < saleIds.length; i += BATCH_SIZE) {
-        batches.push(saleIds.slice(i, i + BATCH_SIZE));
-      }
-      
-      console.log(`📦 Split deletion into ${batches.length} batches of max ${BATCH_SIZE} rows each`);
-      
-      // Process each batch
-      for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-        const batch = batches[batchIndex];
-        console.log(`🔄 Processing deletion batch ${batchIndex + 1}/${batches.length} (${batch.length} sales)...`);
-        
-        const writeBatchRef = writeBatch(db);
-        
-        batch.forEach(id => {
-          const saleRef = doc(db, COLLECTIONS.REGISTER_SALES, id);
-          writeBatchRef.delete(saleRef);
-        });
-        
-        await writeBatchRef.commit();
-        console.log(`✅ Deletion batch ${batchIndex + 1} committed successfully (${batch.length} sales deleted)`);
-      }
-      
-      console.log(`🎉 All ${saleIds.length} sales deleted successfully from Firebase`);
-      
-      // ✅ CRITICAL: Reload sales data to get the updated list
-      console.log('🔄 Reloading sales data after deletion...');
-      await loadRegisterSales();
-      
-      // ✅ CRITICAL: The useEffect will automatically trigger recalculateProductQuantities
-      // when registerSales changes, but we add an extra safety call
-      console.log('✅ Sales deletion completed - EXACT stock recalculation will be triggered automatically');
-      return true;
-    } catch (error) {
-      console.error('❌ Error deleting sales:', error);
-      
-      // Fallback: update local state
-      console.log('🔄 Fallback: Updating local state after deletion error...');
-      setRegisterSales(prev => {
-        const updatedSales = prev.filter(s => !saleIds.includes(s.id));
-        console.log(`📊 Local sales updated: ${prev.length} → ${updatedSales.length}`);
-        return updatedSales;
-      });
-      
-      // ✅ CRITICAL: The useEffect will trigger recalculation when registerSales changes
-      console.log('✅ Local sales deletion completed - EXACT stock recalculation will be triggered automatically');
-      return false;
-    }
-  };
-
-  const generateAlerts = async () => {
-    const newAlerts: Alert[] = [];
-
-    // Alertes de stock faible
-    products.forEach(product => {
-      if (product.stock <= product.minStock) {
-        const severity = product.stock === 0 ? 'error' : 'warning';
-        const message = product.stock === 0 
-          ? `Rupture de stock pour ${product.name}` 
-          : `Stock faible pour ${product.name} (${product.stock} unités restantes, minimum: ${product.minStock})`;
-        
-        newAlerts.push({
-          id: `low-stock-${product.id}`,
-          type: 'low-stock',
-          message,
-          severity,
-          timestamp: new Date(),
-          read: false
-        });
-      }
-    });
-
-    // Alerte de ventes élevées
-    const today = new Date();
-    const todaySales = registerSales.filter(sale => 
-      sale.date.toDateString() === today.toDateString()
-    );
-
-    if (todaySales.length > 50) {
-      newAlerts.push({
-        id: 'high-sales-today',
-        type: 'high-sales',
-        message: `Journée exceptionnelle ! ${todaySales.length} ventes réalisées aujourd'hui`,
-        severity: 'info',
-        timestamp: new Date(),
-        read: false
-      });
-    }
-
-    setAlerts(newAlerts);
-  };
-
-  const markAlertAsRead = (id: string) => {
-    setAlerts(prev => prev.map(a => a.id === id ? { ...a, read: true } : a));
-  };
-
-  const refreshData = async () => {
-    console.log('🔄 Refreshing all data...');
-    await loadInitialData();
-    // The useEffect will automatically trigger recalculateProductQuantities
-    console.log('✅ Data refresh completed');
-  };
-
-  return {
-    registerSales,
-    products,
-    dashboardStats,
-    alerts,
-    loading,
-    addRegisterSales,
-    addProduct,
-    addProducts, // ✅ NEW: Batch add products
-    updateProduct,
-    updateSale, // ✅ NEW: Update sale function
-    categorizeSales, // ✅ FIXED: Now properly updates the category field WITHOUT reload
-    deleteProduct,
-    deleteProducts,
-    deleteSales, // ✅ FIXED: Now properly recalculates stock automatically
-    markAlertAsRead,
-    refreshData,
-    autoSyncProductsFromSales // ✅ NEW: Auto-sync function
-  };
+  }>;
 }
 
-// Mock data functions (same as before)
-function generateMockSales(): RegisterSale[] {
-  const products = ['Pain de mie', 'Lait UHT', 'Yaourt nature', 'Pommes', 'Bananes', 'Coca-Cola', 'Eau minérale'];
-  const categories = ['Alimentaire', 'Boisson', 'Fruits'];
-  const registers = ['Register1', 'Register2'];
-  const sellers = ['Marie Dupont', 'Jean Martin', 'Sophie Bernard', 'Pierre Durand'];
+export default function StockModule({
+  products,
+  registerSales,
+  loading,
+  onAddProduct,
+  onAddProducts,
+  onUpdateProduct,
+  onDeleteProduct,
+  onDeleteProducts,
+  onRefreshData,
+  autoSyncProductsFromSales
+}: StockModuleProps) {
+  const { t } = useLanguage();
+  const { viewState, updateState, updateFilters, updateDateRange, updateSelectedItems, updateModals } = useViewState('stock');
+  useScrollPosition('stock');
 
-  return Array.from({ length: 150 }, (_, i) => {
-    const product = products[Math.floor(Math.random() * products.length)];
-    const quantity = Math.floor(Math.random() * 5) + 1;
-    const price = Math.random() * 10 + 1;
-    
-    return {
-      id: `sale-${i}`,
-      product,
-      category: categories[Math.floor(Math.random() * categories.length)],
-      register: registers[Math.floor(Math.random() * registers.length)],
-      date: subDays(new Date(), Math.floor(Math.random() * 30)),
-      seller: sellers[Math.floor(Math.random() * sellers.length)],
-      quantity,
-      price: Math.round(price * 100) / 100,
-      total: Math.round(quantity * price * 100) / 100
-    };
+  // Initialize state from viewState with stable defaults
+  const [searchTerm, setSearchTerm] = useState(viewState.searchTerm || '');
+  const [filterCategory, setFilterCategory] = useState(viewState.filters?.category || 'all');
+  const [filterStatus, setFilterStatus] = useState(viewState.filters?.status || 'all');
+  const [filterStockLevel, setFilterStockLevel] = useState(viewState.filters?.stockLevel || 'all');
+  const [filterRegister, setFilterRegister] = useState(viewState.filters?.register || 'all');
+  const [filterSeller, setFilterSeller] = useState(viewState.filters?.seller || 'all');
+  const [sortField, setSortField] = useState<keyof Product>(viewState.sortField as keyof Product || 'name');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>(viewState.sortDirection || 'asc');
+  const [dateRange, setDateRange] = useState(viewState.dateRange || { start: '', end: '' });
+  const [selectedProducts, setSelectedProducts] = useState<Set<string>>(viewState.selectedItems || new Set());
+  const [currentPage, setCurrentPage] = useState(viewState.currentPage || 1);
+  const [itemsPerPage, setItemsPerPage] = useState(viewState.itemsPerPage || 50);
+  const [activeTab, setActiveTab] = useState(viewState.activeTab || 'list');
+  
+  // Modal states
+  const [showAddModal, setShowAddModal] = useState(viewState.modals?.addModal || false);
+  const [showEditModal, setShowEditModal] = useState(viewState.modals?.editModal || false);
+  const [showDeleteModal, setShowDeleteModal] = useState(viewState.modals?.deleteModal || false);
+  const [showImportModal, setShowImportModal] = useState(viewState.modals?.importModal || false);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [isUpdating, setIsUpdating] = useState(false);
+  
+  // Edit product form state
+  const [editForm, setEditForm] = useState({
+    name: '',
+    category: '',
+    price: '',
+    stock: '',
+    initialStock: '',
+    minStock: '',
+    description: ''
   });
-}
+  
+  // Toast notification state
+  const [toastNotification, setToastNotification] = useState<{
+    show: boolean;
+    type: 'success' | 'error';
+    message: string;
+  }>({ show: false, type: 'success', message: '' });
 
-function generateBasicProducts(): Product[] {
-  return [
-    {
-      id: '1',
-      name: 'JELLY POP',
-      category: 'CONFISERIES',
-      price: 1.00,
-      stock: 45,
-      initialStock: 50,
-      quantitySold: 5,
-      minStock: 10,
-      description: 'Bonbons Jelly Pop'
-    },
-    {
-      id: '2',
-      name: 'SMARTIES',
-      category: 'CONFISERIES',
-      price: 1.00,
-      stock: 8,
-      initialStock: 20,
-      quantitySold: 12,
-      minStock: 15,
-      description: 'Bonbons Smarties'
-    },
-    {
-      id: '3',
-      name: 'COCA 1,5L',
-      category: 'BOISSONS',
-      price: 2.50,
-      stock: 25,
-      initialStock: 30,
-      quantitySold: 5,
-      minStock: 12,
-      description: 'Coca-Cola 1.5L'
-    },
-    {
-      id: '4',
-      name: 'Pain de mie',
-      category: 'Alimentaire',
-      price: 1.50,
-      stock: 30,
-      initialStock: 35,
-      quantitySold: 5,
-      minStock: 10,
-      description: 'Pain de mie complet'
-    },
-    {
-      id: '5',
-      name: 'Lait UHT',
-      category: 'Alimentaire',
-      price: 1.20,
-      stock: 5,
-      initialStock: 20,
-      quantitySold: 15,
-      minStock: 15,
-      description: 'Lait UHT demi-écrémé 1L'
-    },
-    {
-      id: '6',
-      name: 'Coca-Cola',
-      category: 'Boisson',
-      price: 2.80,
-      stock: 30,
-      initialStock: 35,
-      quantitySold: 5,
-      minStock: 5,
-      description: 'Coca-Cola'
-    },
-    {
-      id: '7',
-      name: 'Yaourt nature',
-      category: 'Alimentaire',
-      price: 1.50,
-      stock: 25,
-      initialStock: 30,
-      quantitySold: 5,
-      minStock: 10,
-      description: 'Yaourt nature'
-    },
-    {
-      id: '8',
-      name: 'Pommes',
-      category: 'Fruits',
-      price: 3.20,
-      stock: 40,
-      initialStock: 50,
-      quantitySold: 10,
-      minStock: 15,
-      description: 'Pommes fraîches'
-    },
-    {
-      id: '9',
-      name: 'Bananes',
-      category: 'Fruits',
-      price: 2.80,
-      stock: 35,
-      initialStock: 45,
-      quantitySold: 10,
-      minStock: 12,
-      description: 'Bananes fraîches'
-    },
-    {
-      id: '10',
-      name: 'Eau minérale',
-      category: 'Boisson',
-      price: 1.10,
-      stock: 48,
-      initialStock: 60,
-      quantitySold: 12,
-      minStock: 20,
-      description: 'Eau minérale'
+  // Debounced state updates to prevent excessive re-renders
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      updateState({
+        searchTerm,
+        currentPage,
+        itemsPerPage,
+        sortField,
+        sortDirection,
+        activeTab,
+        scrollPosition: viewState.scrollPosition
+      });
+    }, 100);
+
+    return () => clearTimeout(timeoutId);
+  }, [searchTerm, currentPage, itemsPerPage, sortField, sortDirection, activeTab]);
+
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      updateFilters({ 
+        category: filterCategory, 
+        status: filterStatus, 
+        stockLevel: filterStockLevel,
+        register: filterRegister,
+        seller: filterSeller
+      });
+    }, 100);
+
+    return () => clearTimeout(timeoutId);
+  }, [filterCategory, filterStatus, filterStockLevel, filterRegister, filterSeller]);
+
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      updateDateRange(dateRange);
+    }, 100);
+
+    return () => clearTimeout(timeoutId);
+  }, [dateRange]);
+
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      updateSelectedItems(selectedProducts);
+    }, 100);
+
+    return () => clearTimeout(timeoutId);
+  }, [selectedProducts]);
+
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      updateModals({ 
+        addModal: showAddModal, 
+        editModal: showEditModal, 
+        deleteModal: showDeleteModal, 
+        importModal: showImportModal 
+      });
+    }, 100);
+
+    return () => clearTimeout(timeoutId);
+  }, [showAddModal, showEditModal, showDeleteModal, showImportModal]);
+
+  // Auto-hide toast after 5 seconds
+  useEffect(() => {
+    if (toastNotification.show) {
+      const timer = setTimeout(() => {
+        setToastNotification(prev => ({ ...prev, show: false }));
+      }, 5000);
+      return () => clearTimeout(timer);
     }
-  ];
-}
+  }, [toastNotification.show]);
 
-function generateMockProducts(): Product[] {
-  return generateBasicProducts();
+  // Initialize edit form when editing product changes
+  useEffect(() => {
+    if (editingProduct) {
+      setEditForm({
+        name: editingProduct.name,
+        category: editingProduct.category,
+        price: editingProduct.price.toString(),
+        stock: editingProduct.stock.toString(),
+        initialStock: (editingProduct.initialStock || 0).toString(),
+        minStock: editingProduct.minStock.toString(),
+        description: editingProduct.description || ''
+      });
+    }
+  }, [editingProduct]);
+
+  // Show toast notification function
+  const showToast = (type: 'success' | 'error', message: string) => {
+    setToastNotification({ show: true, type, message });
+  };
+
+  // Get filtered sales based on register, seller, and date range
+  const getFilteredSales = () => {
+    let filtered = registerSales;
+    
+    // Apply date range filter
+    if (dateRange.start || dateRange.end) {
+      filtered = filtered.filter(sale => {
+        const saleDate = sale.date;
+        let matchesDateRange = true;
+        
+        if (dateRange.start) {
+          const startDate = startOfDay(new Date(dateRange.start));
+          matchesDateRange = matchesDateRange && (isAfter(saleDate, startDate) || saleDate.getTime() === startDate.getTime());
+        }
+        
+        if (dateRange.end) {
+          const endDate = endOfDay(new Date(dateRange.end));
+          matchesDateRange = matchesDateRange && (isBefore(saleDate, endDate) || saleDate.getTime() === endDate.getTime());
+        }
+        
+        return matchesDateRange;
+      });
+    }
+    
+    // Apply register filter
+    if (filterRegister !== 'all') {
+      filtered = filtered.filter(sale => sale.register === filterRegister);
+    }
+    
+    // Apply seller filter
+    if (filterSeller !== 'all') {
+      filtered = filtered.filter(sale => sale.seller === filterSeller);
+    }
+    
+    return filtered;
+  };
+
+  // Calculate historical stock for products based on date filter
+  const calculateHistoricalStock = (product: Product, targetDate?: Date): {
+    historicalStock: number;
+    quantitySoldUpToDate: number;
+    isHistoricalView: boolean;
+  } => {
+    // If no target date specified, use current stock
+    if (!targetDate) {
+      return {
+        historicalStock: product.stock,
+        quantitySoldUpToDate: product.quantitySold || 0,
+        isHistoricalView: false
+      };
+    }
+
+    // Calculate what the stock would have been on the target date
+    const salesUpToDate = registerSales.filter(sale => {
+      const saleDate = sale.date;
+      const endOfTargetDate = endOfDay(targetDate);
+      
+      // Include sales up to and including the target date
+      return (isBefore(saleDate, endOfTargetDate) || saleDate.getTime() === endOfTargetDate.getTime()) &&
+             sale.product.toLowerCase().trim() === product.name.toLowerCase().trim() &&
+             sale.category.toLowerCase().trim() === product.category.toLowerCase().trim();
+    });
+
+    // Calculate quantities sold up to the target date
+    const quantitySoldUpToDate = salesUpToDate.reduce((sum, sale) => sum + sale.quantity, 0);
+    
+    // Calculate historical stock: initial stock - sales up to date
+    const initialStock = product.initialStock || product.stock + (product.quantitySold || 0);
+    const historicalStock = Math.max(0, initialStock - quantitySoldUpToDate);
+
+    return {
+      historicalStock,
+      quantitySoldUpToDate,
+      isHistoricalView: true
+    };
+  };
+
+  // Get products that have sales matching the filtered criteria
+  const getProductsWithFilteredSales = () => {
+    const filteredSales = getFilteredSales();
+    
+    if (filterRegister === 'all' && filterSeller === 'all' && !dateRange.start && !dateRange.end) {
+      // No sales filters applied, return all products
+      return products;
+    }
+    
+    // Get unique product names from filtered sales
+    const salesProductNames = new Set(
+      filteredSales.map(sale => `${sale.product.toLowerCase().trim()}|${sale.category.toLowerCase().trim()}`)
+    );
+    
+    // Return products that have sales matching the criteria
+    return products.filter(product => {
+      const productKey = `${product.name.toLowerCase().trim()}|${product.category.toLowerCase().trim()}`;
+      return salesProductNames.has(productKey);
+    });
+  };
+
+  // Calculate revenue for each product based on filtered sales
+  const calculateProductRevenue = (product: Product, filteredSales: RegisterSale[]): number => {
+    return filteredSales
+      .filter(sale => 
+        sale.product.toLowerCase().trim() === product.name.toLowerCase().trim() &&
+        sale.category.toLowerCase().trim() === product.category.toLowerCase().trim()
+      )
+      .reduce((sum, sale) => sum + sale.total, 0);
+  };
+
+  // Enhanced products with historical stock calculation
+  const enhancedProducts = useMemo(() => {
+    // Determine target date for historical calculation
+    const targetDate = dateRange.end ? new Date(dateRange.end) : 
+                      dateRange.start ? new Date(dateRange.start) : null;
+    
+    return products.map(product => {
+      const stockInfo = calculateHistoricalStock(product, targetDate);
+      
+      return {
+        ...product,
+        displayStock: stockInfo.historicalStock,
+        displayQuantitySold: stockInfo.quantitySoldUpToDate,
+        isHistoricalView: stockInfo.isHistoricalView,
+        originalStock: product.stock,
+        originalQuantitySold: product.quantitySold || 0
+      };
+    });
+  }, [products, dateRange, registerSales]);
+
+  // Apply all filters including sales-based filters
+  const filteredProducts = useMemo(() => {
+    // Start with products that match sales filters but use enhanced products
+    let filtered = enhancedProducts;
+    
+    // Apply sales-based filtering first
+    if (filterRegister !== 'all' || filterSeller !== 'all' || dateRange.start || dateRange.end) {
+      const filteredSales = getFilteredSales();
+      const salesProductNames = new Set(
+        filteredSales.map(sale => `${sale.product.toLowerCase().trim()}|${sale.category.toLowerCase().trim()}`)
+      );
+      
+      filtered = filtered.filter(product => {
+        const productKey = `${product.name.toLowerCase().trim()}|${product.category.toLowerCase().trim()}`;
+        return salesProductNames.has(productKey);
+      });
+    }
+    
+    // Apply search filter
+    if (searchTerm) {
+      filtered = filtered.filter(product =>
+        product.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        product.category.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (product.description && product.description.toLowerCase().includes(searchTerm.toLowerCase()))
+      );
+    }
+
+    // Apply category filter
+    if (filterCategory !== 'all') {
+      filtered = filtered.filter(product => product.category === filterCategory);
+    }
+
+    // Apply status filter using historical stock
+    if (filterStatus !== 'all') {
+      filtered = filtered.filter(product => {
+        const stockToCheck = product.displayStock;
+        switch (filterStatus) {
+          case 'in_stock':
+            return stockToCheck > product.minStock;
+          case 'low_stock':
+            return stockToCheck > 0 && stockToCheck <= product.minStock;
+          case 'out_of_stock':
+            return stockToCheck === 0;
+          default:
+            return true;
+        }
+      });
+    }
+
+    // Apply stock level filter using historical stock
+    if (filterStockLevel !== 'all') {
+      filtered = filtered.filter(product => {
+        const stockToCheck = product.displayStock;
+        switch (filterStockLevel) {
+          case 'high':
+            return stockToCheck > 100;
+          case 'medium':
+            return stockToCheck >= 10 && stockToCheck <= 100;
+          case 'low':
+            return stockToCheck > 0 && stockToCheck < 10;
+          case 'empty':
+            return stockToCheck === 0;
+          default:
+            return true;
+        }
+      });
+    }
+
+    // Apply sorting using historical stock for stock field
+    filtered.sort((a, b) => {
+      let aValue, bValue;
+      
+      if (sortField === 'stock') {
+        aValue = a.displayStock;
+        bValue = b.displayStock;
+      } else {
+        aValue = a[sortField];
+        bValue = b[sortField];
+      }
+      
+      if (sortDirection === 'asc') {
+        return aValue < bValue ? -1 : aValue > bValue ? 1 : 0;
+      } else {
+        return aValue > bValue ? -1 : aValue < bValue ? 1 : 0;
+      }
+    });
+
+    return filtered;
+  }, [
+    enhancedProducts, 
+    searchTerm, 
+    filterCategory, 
+    filterStatus, 
+    filterStockLevel,
+    filterRegister,
+    filterSeller,
+    dateRange,
+    sortField, 
+    sortDirection,
+    registerSales
+  ]);
+
+  // Get filtered sales for revenue calculations
+  const filteredSales = useMemo(() => getFilteredSales(), [registerSales, filterRegister, filterSeller, dateRange]);
+
+  // Calculate product revenues
+  const productRevenues = useMemo(() => {
+    const revenues = new Map<string, number>();
+    
+    filteredProducts.forEach(product => {
+      const revenue = calculateProductRevenue(product, filteredSales);
+      revenues.set(product.id, revenue);
+    });
+    
+    return revenues;
+  }, [filteredProducts, filteredSales]);
+
+  // Pagination
+  const totalPages = Math.ceil(filteredProducts.length / itemsPerPage);
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const endIndex = startIndex + itemsPerPage;
+  const paginatedProducts = filteredProducts.slice(startIndex, endIndex);
+
+  // Find missing products from sales data
+  const missingProducts = useMemo(() => {
+    const existingProductNames = new Set(products.map(p => p.name.toLowerCase()));
+    const missingItems = new Set<string>();
+    
+    registerSales.forEach(sale => {
+      const productName = sale.product.toLowerCase();
+      if (!existingProductNames.has(productName)) {
+        missingItems.add(sale.product);
+      }
+    });
+    
+    return Array.from(missingItems);
+  }, [products, registerSales]);
+
+  // Get unique values for filters
+  const categories = [...new Set(products.map(p => p.category))];
+  const registers = [...new Set(registerSales.map(s => s.register))];
+  const sellers = [...new Set(registerSales.map(s => s.seller))];
+
+  // Calculate statistics from filtered products using historical data
+  const statistics = useMemo(() => {
+    const totalProducts = filteredProducts.length;
+    const totalStock = filteredProducts.reduce((sum, product) => sum + product.displayStock, 0);
+    const totalSold = filteredProducts.reduce((sum, product) => sum + product.displayQuantitySold, 0);
+    const outOfStock = filteredProducts.filter(product => product.displayStock === 0).length;
+    const lowStock = filteredProducts.filter(product => 
+      product.displayStock > 0 && product.displayStock <= product.minStock
+    ).length;
+    const totalRevenue = Array.from(productRevenues.values()).reduce((sum, revenue) => sum + revenue, 0);
+
+    // Additional historical context
+    const isHistoricalView = filteredProducts.some(p => p.isHistoricalView);
+    const dateInfo = isHistoricalView ? 
+      (dateRange.end ? `au ${format(new Date(dateRange.end), 'dd/MM/yyyy')}` :
+       dateRange.start ? `à partir du ${format(new Date(dateRange.start), 'dd/MM/yyyy')}` : '') : '';
+
+    return {
+      totalProducts,
+      totalStock,
+      totalSold,
+      outOfStock,
+      lowStock,
+      totalRevenue,
+      isHistoricalView,
+      dateInfo
+    };
+  }, [filteredProducts, productRevenues, dateRange]);
+
+  const handleSort = (field: keyof Product) => {
+    if (sortField === field) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortDirection('asc');
+    }
+  };
+
+  const handleExport = () => {
+    const exportData = filteredProducts.map(product => ({
+      Name: product.name,
+      Category: product.category,
+      Price: product.price,
+      Stock: product.displayStock,
+      'Current Stock': product.originalStock,
+      'Min Stock': product.minStock,
+      'Quantity Sold': product.displayQuantitySold,
+      'Total Sold': product.originalQuantitySold,
+      'Revenue': productRevenues.get(product.id) || 0,
+      'Historical View': product.isHistoricalView ? 'Yes' : 'No',
+      Description: product.description || ''
+    }));
+    
+    const dateStr = statistics.isHistoricalView && dateRange.end ? 
+      `${format(new Date(dateRange.end), 'yyyy-MM-dd')}` : 
+      format(new Date(), 'yyyy-MM-dd');
+    
+    exportToExcel(exportData, `stock-${dateStr}`);
+  };
+
+  // Check if any sales-based filters are active
+  const hasSalesFilters = filterRegister !== 'all' || filterSeller !== 'all' || dateRange.start || dateRange.end;
+
+  const hasActiveFilters = searchTerm || filterCategory !== 'all' || filterStatus !== 'all' || 
+    filterStockLevel !== 'all' || hasSalesFilters;
+
+  const clearAllFilters = () => {
+    setSearchTerm('');
+    setFilterCategory('all');
+    setFilterStatus('all');
+    setFilterStockLevel('all');
+    setFilterRegister('all');
+    setFilterSeller('all');
+    setDateRange({ start: '', end: '' });
+    setCurrentPage(1);
+  };
+
+  const handleItemsPerPageChange = (value: number) => {
+    setItemsPerPage(value);
+    setCurrentPage(1);
+  };
+
+  const goToPage = (page: number) => {
+    setCurrentPage(Math.max(1, Math.min(page, totalPages)));
+  };
+
+  // Selection handlers
+  const toggleSelectProduct = (productId: string) => {
+    const newSelected = new Set(selectedProducts);
+    if (newSelected.has(productId)) {
+      newSelected.delete(productId);
+    } else {
+      newSelected.add(productId);
+    }
+    setSelectedProducts(newSelected);
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedProducts.size === paginatedProducts.length) {
+      setSelectedProducts(new Set());
+    } else {
+      setSelectedProducts(new Set(paginatedProducts.map(product => product.id)));
+    }
+  };
+
+  const selectAllFiltered = () => {
+    setSelectedProducts(new Set(filteredProducts.map(product => product.id)));
+  };
+
+  // Auto-sync handler
+  const handleAutoSync = async () => {
+    setIsSyncing(true);
+    try {
+      const result = await autoSyncProductsFromSales();
+      
+      if (result.created.length > 0) {
+        showToast('success', `${result.created.length} nouveaux produits synchronisés depuis les ventes`);
+      } else {
+        showToast('success', 'Synchronisation terminée - Aucun nouveau produit à créer');
+      }
+    } catch (error) {
+      console.error('Auto-sync error:', error);
+      showToast('error', 'Erreur lors de la synchronisation automatique');
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  // Delete products handler
+  const handleDeleteProducts = async () => {
+    if (selectedProducts.size === 0) return;
+    
+    setIsDeleting(true);
+    try {
+      const success = await onDeleteProducts(Array.from(selectedProducts));
+      if (success) {
+        setSelectedProducts(new Set());
+        setShowDeleteModal(false);
+        showToast('success', `${selectedProducts.size} produit(s) supprimé(s) avec succès`);
+      } else {
+        showToast('error', 'Erreur lors de la suppression des produits');
+      }
+    } catch (error) {
+      console.error('Delete error:', error);
+      showToast('error', 'Erreur lors de la suppression des produits');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  // Handle initial stock change
+  const handleInitialStockChange = async (productId: string, newInitialStock: number) => {
+    const product = products.find(p => p.id === productId);
+    if (!product) return;
+    
+    // Calculate new current stock: initialStock - quantitySold
+    const quantitySold = product.quantitySold || 0;
+    const newCurrentStock = Math.max(0, newInitialStock - quantitySold);
+    
+    const updates: Partial<Product> = {
+      initialStock: newInitialStock,
+      stock: newCurrentStock
+    };
+    
+    try {
+      await onUpdateProduct(productId, updates);
+      showToast('success', `Stock initial mis à jour: ${product.name}`);
+    } catch (error) {
+      console.error('Error updating initial stock:', error);
+      showToast('error', 'Erreur lors de la mise à jour du stock initial');
+    }
+  };
+
+  // Handle adding missing products from sales
+  const handleAddMissingProducts = async () => {
+    if (missingProducts.length === 0) return;
+    
+    setIsSyncing(true);
+    try {
+      const result = await autoSyncProductsFromSales();
+      
+      if (result.created.length > 0) {
+        showToast('success', `${result.created.length} produits manquants ajoutés depuis les ventes`);
+      } else {
+        showToast('success', 'Synchronisation terminée - Aucun nouveau produit à créer');
+      }
+    } catch (error) {
+      console.error('Add missing products error:', error);
+      showToast('error', 'Erreur lors de l\'ajout des produits manquants');
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  // Handle edit product form submission
+  const handleEditProduct = async () => {
+    if (!editingProduct) return;
+    
+    setIsUpdating(true);
+    try {
+      const updates: Partial<Product> = {
+        name: editForm.name.trim(),
+        category: editForm.category.trim(),
+        price: parseFloat(editForm.price),
+        initialStock: parseInt(editForm.initialStock),
+        stock: parseInt(editForm.stock),
+        minStock: parseInt(editForm.minStock),
+        description: editForm.description.trim()
+      };
+      
+      await onUpdateProduct(editingProduct.id, updates);
+      setShowEditModal(false);
+      setEditingProduct(null);
+      showToast('success', 'Produit mis à jour avec succès');
+    } catch (error) {
+      console.error('Update error:', error);
+      showToast('error', 'Erreur lors de la mise à jour du produit');
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const formatCurrency = (amount: number) => {
+    return new Intl.NumberFormat('fr-FR', {
+      style: 'currency',
+      currency: 'EUR'
+    }).format(amount);
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-96">
+        <motion.div
+          animate={{ rotate: 360 }}
+          transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
+          className="w-6 h-6 border border-blue-400/30 border-t-blue-400 rounded-full"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <div>
+          <h1 className="text-3xl font-bold text-white mb-2">Gestion du Stock</h1>
+          <p className="text-slate-400">Gérez votre inventaire et suivez vos stocks en temps réel</p>
+        </div>
+        
+        <div className="flex space-x-3">
+          <button
+            onClick={handleAutoSync}
+            disabled={isSyncing}
+            className="bg-gradient-to-r from-purple-500 to-purple-600 text-white font-semibold 
+                       py-3 px-6 rounded-xl hover:from-purple-600 hover:to-purple-700 
+                       disabled:opacity-50 disabled:cursor-not-allowed
+                       transition-all duration-200 flex items-center space-x-2"
+          >
+            {isSyncing ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Zap className="w-5 h-5" />}
+            <span>{isSyncing ? 'Synchronisation...' : 'Synchro Ventes'}</span>
+          </button>
+          
+          <button
+            onClick={() => setShowImportModal(true)}
+            className="bg-gradient-to-r from-blue-500 to-blue-600 text-white font-semibold 
+                       py-3 px-6 rounded-xl hover:from-blue-600 hover:to-blue-700 
+                       transition-all duration-200 flex items-center space-x-2"
+          >
+            <Upload className="w-5 h-5" />
+            <span>Import Stock</span>
+          </button>
+          
+          <button
+            onClick={() => setShowAddModal(true)}
+            className="bg-gradient-to-r from-green-500 to-green-600 text-white font-semibold 
+                       py-3 px-6 rounded-xl hover:from-green-600 hover:to-green-700 
+                       transition-all duration-200 flex items-center space-x-2"
+          >
+            <Plus className="w-5 h-5" />
+            <span>Ajouter Produit</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Toast Notification */}
+      <AnimatePresence>
+        {toastNotification.show && (
+          <motion.div
+            initial={{ opacity: 0, y: -50, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -50, scale: 0.95 }}
+            className="fixed top-4 right-4 z-50"
+          >
+            <div className={`p-4 rounded-xl border shadow-2xl backdrop-blur-xl flex items-center space-x-3 min-w-80 ${
+              toastNotification.type === 'success'
+                ? 'bg-green-500/20 border-green-500/30 text-green-400'
+                : 'bg-red-500/20 border-red-500/30 text-red-400'
+            }`}>
+              {toastNotification.type === 'success' ? (
+                <CheckCircle className="w-6 h-6 flex-shrink-0" />
+              ) : (
+                <AlertTriangle className="w-6 h-6 flex-shrink-0" />
+              )}
+              <span className="font-medium flex-1">{toastNotification.message}</span>
+              <button
+                onClick={() => setToastNotification(prev => ({ ...prev, show: false }))}
+                className="text-gray-400 hover:text-white transition-colors duration-200"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Historical Context Banner */}
+      {statistics.isHistoricalView && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-gradient-to-r from-blue-500/10 to-blue-600/10 backdrop-blur-xl 
+                     border border-blue-500/20 rounded-xl p-4"
+        >
+          <div className="flex items-center space-x-3">
+            <Calendar className="w-6 h-6 text-blue-400" />
+            <div>
+              <h3 className="text-blue-400 font-semibold text-lg">
+                Vue historique du stock
+              </h3>
+              <p className="text-gray-400 text-sm">
+                Affichage des données {statistics.dateInfo}. Les valeurs de stock et quantités vendues correspondent à cette période.
+              </p>
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      {/* Statistics Cards with new Revenue card */}
+      <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.1 }}
+          className="bg-gradient-to-br from-blue-500/10 to-blue-600/10 backdrop-blur-xl 
+                     border border-blue-500/20 rounded-xl p-6"
+        >
+          <div className="flex items-center space-x-3 mb-3">
+            <Package className="w-6 h-6 text-blue-400" />
+            <div>
+              <p className="text-slate-400 text-sm">Références</p>
+              <p className="text-2xl font-bold text-white">{statistics.totalProducts}</p>
+            </div>
+          </div>
+          <p className="text-blue-400 text-sm">Total Produits</p>
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.2 }}
+          className="bg-gradient-to-br from-green-500/10 to-green-600/10 backdrop-blur-xl 
+                     border border-green-500/20 rounded-xl p-6"
+        >
+          <div className="flex items-center space-x-3 mb-3">
+            <TrendingUp className="w-6 h-6 text-green-400" />
+            <div>
+              <p className="text-slate-400 text-sm">Unités</p>
+              <p className="text-2xl font-bold text-white">{statistics.totalStock.toLocaleString()}</p>
+            </div>
+          </div>
+          <p className="text-green-400 text-sm">Stock Total</p>
+        </motion.div>
+
+        {/* New Revenue Card */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.25 }}
+          className="bg-gradient-to-br from-purple-500/10 to-purple-600/10 backdrop-blur-xl 
+                     border border-purple-500/20 rounded-xl p-6"
+        >
+          <div className="flex items-center space-x-3 mb-3">
+            <DollarSign className="w-6 h-6 text-purple-400" />
+            <div>
+              <p className="text-slate-400 text-sm">CA Total</p>
+              <p className="text-2xl font-bold text-white">{formatCurrency(statistics.totalRevenue)}</p>
+            </div>
+          </div>
+          <p className="text-purple-400 text-sm">Chiffre d'Affaires</p>
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.3 }}
+          className="bg-gradient-to-br from-red-500/10 to-red-600/10 backdrop-blur-xl 
+                     border border-red-500/20 rounded-xl p-6"
+        >
+          <div className="flex items-center space-x-3 mb-3">
+            <TrendingDown className="w-6 h-6 text-red-400" />
+            <div>
+              <p className="text-slate-400 text-sm">Ruptures</p>
+              <p className="text-2xl font-bold text-white">{statistics.outOfStock}</p>
+            </div>
+          </div>
+          <p className="text-red-400 text-sm">Stock 0</p>
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.4 }}
+          className="bg-gradient-to-br from-orange-500/10 to-orange-600/10 backdrop-blur-xl 
+                     border border-orange-500/20 rounded-xl p-6"
+        >
+          <div className="flex items-center space-x-3 mb-3">
+            <AlertTriangle className="w-6 h-6 text-orange-400" />
+            <div>
+              <p className="text-slate-400 text-sm">Alertes</p>
+              <p className="text-2xl font-bold text-white">{statistics.lowStock}</p>
+            </div>
+          </div>
+          <p className="text-orange-400 text-sm">Stock Faible</p>
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.5 }}
+          className="bg-gradient-to-br from-cyan-500/10 to-cyan-600/10 backdrop-blur-xl 
+                     border border-cyan-500/20 rounded-xl p-6"
+        >
+          <div className="flex items-center space-x-3 mb-3">
+            <TrendingUp className="w-6 h-6 text-cyan-400" />
+            <div>
+              <p className="text-slate-400 text-sm">Vendus</p>
+              <p className="text-2xl font-bold text-white">{statistics.totalSold.toLocaleString()}</p>
+            </div>
+          </div>
+          <p className="text-cyan-400 text-sm">Total Vendus</p>
+        </motion.div>
+      </div>
+
+      {/* Missing Products Alert */}
+      {missingProducts.length > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-orange-500/10 border border-orange-500/20 rounded-xl p-6"
+        >
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center space-x-3">
+              <AlertTriangle className="w-6 h-6 text-orange-400" />
+              <div>
+                <h3 className="text-orange-400 font-semibold text-lg">
+                  Produits manquants détectés
+                </h3>
+                <p className="text-gray-400 text-sm">
+                  {missingProducts.length} produit(s) trouvé(s) dans les ventes mais absent(s) du stock
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={handleAddMissingProducts}
+              disabled={isSyncing}
+              className="bg-orange-500 text-white px-6 py-3 rounded-xl hover:bg-orange-600 
+                         disabled:opacity-50 disabled:cursor-not-allowed
+                         transition-all duration-200 flex items-center space-x-2 font-semibold"
+            >
+              {isSyncing ? (
+                <>
+                  <RefreshCw className="w-5 h-5 animate-spin" />
+                  <span>Ajout...</span>
+                </>
+              ) : (
+                <>
+                  <Plus className="w-5 h-5" />
+                  <span>Ajouter automatiquement</span>
+                </>
+              )}
+            </button>
+          </div>
+          <div className="bg-orange-500/5 border border-orange-500/10 rounded-lg p-4">
+            <p className="text-sm text-gray-400 mb-2">
+              <strong className="text-orange-400">Produits manquants:</strong>
+            </p>
+            <div className="text-sm text-gray-300">
+              {missingProducts.slice(0, 10).map((product, index) => (
+                <span key={index} className="inline-block bg-orange-500/20 text-orange-300 px-2 py-1 rounded mr-2 mb-2">
+                  {product}
+                </span>
+              ))}
+              {missingProducts.length > 10 && (
+                <span className="text-orange-400 font-medium">
+                  +{missingProducts.length - 10} autres...
+                </span>
+              )}
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      {/* Selection Actions */}
+      {selectedProducts.size > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-gradient-to-r from-blue-500/20 to-purple-500/20 backdrop-blur-xl 
+                     border border-blue-500/30 rounded-2xl p-4"
+        >
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-3">
+              <CheckSquare className="w-5 h-5 text-blue-400" />
+              <span className="text-white font-medium">
+                {selectedProducts.size} produit(s) sélectionné(s)
+              </span>
+              {selectedProducts.size < filteredProducts.length && (
+                <button
+                  onClick={selectAllFiltered}
+                  className="text-blue-400 hover:text-blue-300 text-sm underline"
+                >
+                  Sélectionner tous les produits filtrés ({filteredProducts.length})
+                </button>
+              )}
+            </div>
+            
+            <div className="flex space-x-3">
+              <button
+                onClick={() => setShowDeleteModal(true)}
+                className="bg-red-500/20 text-red-400 px-4 py-2 rounded-lg hover:bg-red-500/30 
+                           transition-all duration-200 flex items-center space-x-2 text-sm"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>Supprimer</span>
+              </button>
+              
+              <button
+                onClick={() => setSelectedProducts(new Set())}
+                className="bg-gray-500/20 text-gray-400 px-4 py-2 rounded-lg hover:bg-gray-500/30 
+                           transition-all duration-200 text-sm"
+              >
+                Annuler
+              </button>
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      {/* Advanced Filters with Sales-based filters */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="bg-slate-800/50 backdrop-blur-xl border border-slate-700/50 rounded-xl p-6"
+      >
+        <div className="flex items-center space-x-3 mb-4">
+          <Filter className="w-5 h-5 text-cyan-400" />
+          <h3 className="text-lg font-semibold text-white">Filtres Avancés</h3>
+          {hasActiveFilters && (
+            <button
+              onClick={clearAllFilters}
+              className="ml-auto text-sm text-gray-400 hover:text-white transition-colors duration-200 
+                         bg-slate-700/50 hover:bg-slate-700 px-3 py-2 rounded-lg flex items-center space-x-2"
+            >
+              <X className="w-4 h-4" />
+              <span>Effacer les filtres</span>
+            </button>
+          )}
+        </div>
+        
+        {/* Search and basic filters */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
+            <input
+              type="text"
+              placeholder="Rechercher..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-10 pr-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white
+                         placeholder-gray-400 focus:outline-none focus:border-cyan-500"
+            />
+          </div>
+          
+          <select
+            value={filterCategory}
+            onChange={(e) => setFilterCategory(e.target.value)}
+            className="px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white
+                       focus:outline-none focus:border-cyan-500"
+          >
+            <option value="all">Toutes les catégories</option>
+            {categories.map(category => (
+              <option key={category} value={category}>{category}</option>
+            ))}
+          </select>
+          
+          <select
+            value={filterStatus}
+            onChange={(e) => setFilterStatus(e.target.value)}
+            className="px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white
+                       focus:outline-none focus:border-cyan-500"
+          >
+            <option value="all">Tous les statuts</option>
+            <option value="in_stock">En stock</option>
+            <option value="low_stock">Stock faible</option>
+            <option value="out_of_stock">Rupture</option>
+          </select>
+          
+          <select
+            value={filterStockLevel}
+            onChange={(e) => setFilterStockLevel(e.target.value)}
+            className="px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white
+                       focus:outline-none focus:border-cyan-500"
+          >
+            <option value="all">Tous les niveaux</option>
+            <option value="high">Stock élevé (&gt;100)</option>
+            <option value="medium">Stock moyen (10-100)</option>
+            <option value="low">Stock bas (1-9)</option>
+            <option value="empty">Stock vide (0)</option>
+          </select>
+        </div>
+
+        {/* Sales-based filters */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+          <select
+            value={filterRegister}
+            onChange={(e) => setFilterRegister(e.target.value)}
+            className="px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white
+                       focus:outline-none focus:border-cyan-500"
+          >
+            <option value="all">Toutes les caisses</option>
+            {registers.map(register => (
+              <option key={register} value={register}>{register}</option>
+            ))}
+          </select>
+          
+          <select
+            value={filterSeller}
+            onChange={(e) => setFilterSeller(e.target.value)}
+            className="px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white
+                       focus:outline-none focus:border-cyan-500"
+          >
+            <option value="all">Tous les vendeurs</option>
+            {sellers.map(seller => (
+              <option key={seller} value={seller}>{seller}</option>
+            ))}
+          </select>
+          
+          <div>
+            <label className="block text-sm font-medium text-gray-400 mb-2">
+              📅 Date de début (incluse)
+            </label>
+            <input
+              type="date"
+              value={dateRange.start}
+              onChange={(e) => setDateRange({ ...dateRange, start: e.target.value })}
+              className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white
+                         focus:outline-none focus:border-cyan-500"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Filtre les ventes à partir de cette date
+            </p>
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium text-gray-400 mb-2">
+              📅 Date de fin (incluse)
+            </label>
+            <input
+              type="date"
+              value={dateRange.end}
+              onChange={(e) => setDateRange({ ...dateRange, end: e.target.value })}
+              className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white
+                         focus:outline-none focus:border-cyan-500"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Calcule le stock à cette date (vue historique)
+            </p>
+          </div>
+        </div>
+
+        {/* Filter status indicator */}
+        {hasActiveFilters && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            className="mt-4 p-3 bg-blue-500/10 border border-blue-500/20 rounded-xl"
+          >
+            <div className="flex items-center space-x-2 text-blue-400 text-sm">
+              <Filter className="w-4 h-4" />
+              <span>
+                Filtres actifs - Affichage de {filteredProducts.length} produits sur {products.length} total
+                {hasSalesFilters && (
+                  <span className="ml-2 text-purple-400">
+                    (Filtré par ventes: {filterRegister !== 'all' ? `Caisse ${filterRegister}` : ''} 
+                    {filterSeller !== 'all' ? ` Vendeur ${filterSeller}` : ''}
+                    {dateRange.start || dateRange.end ? ' Période spécifique' : ''})
+                  </span>
+                )}
+              </span>
+            </div>
+          </motion.div>
+        )}
+      </motion.div>
+
+      {/* Pagination Controls */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.1 }}
+        className="bg-gray-800/30 backdrop-blur-xl border border-gray-700 rounded-2xl p-4"
+      >
+        <div className="flex flex-col sm:flex-row items-center justify-between space-y-4 sm:space-y-0">
+          <div className="flex items-center space-x-4">
+            <span className="text-gray-400 text-sm">Affichage par page:</span>
+            <select
+              value={itemsPerPage}
+              onChange={(e) => handleItemsPerPageChange(Number(e.target.value))}
+              className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm
+                         focus:outline-none focus:border-cyan-500"
+            >
+              <option value={30}>30</option>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+            </select>
+            <span className="text-gray-400 text-sm">
+              {startIndex + 1}-{Math.min(endIndex, filteredProducts.length)} sur {filteredProducts.length}
+            </span>
+          </div>
+
+          {totalPages > 1 && (
+            <div className="flex items-center space-x-2">
+              <button
+                onClick={() => goToPage(currentPage - 1)}
+                disabled={currentPage === 1}
+                className="p-2 bg-gray-700 text-white rounded-lg hover:bg-gray-600 
+                           disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+
+              <div className="flex items-center space-x-1">
+                {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                  let pageNum;
+                  if (totalPages <= 5) {
+                    pageNum = i + 1;
+                  } else if (currentPage <= 3) {
+                    pageNum = i + 1;
+                  } else if (currentPage >= totalPages - 2) {
+                    pageNum = totalPages - 4 + i;
+                  } else {
+                    pageNum = currentPage - 2 + i;
+                  }
+
+                  return (
+                    <button
+                      key={pageNum}
+                      onClick={() => goToPage(pageNum)}
+                      className={`px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
+                        currentPage === pageNum
+                          ? 'bg-cyan-500 text-white'
+                          : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                      }`}
+                    >
+                      {pageNum}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <button
+                onClick={() => goToPage(currentPage + 1)}
+                disabled={currentPage === totalPages}
+                className="p-2 bg-gray-700 text-white rounded-lg hover:bg-gray-600 
+                           disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+        </div>
+      </motion.div>
+
+      {/* Products Table */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.2 }}
+        className="bg-gray-800/30 backdrop-blur-xl border border-gray-700 rounded-2xl p-6"
+      >
+        <div className="flex justify-between items-center mb-6">
+          <h3 className="text-lg font-semibold text-white">
+            Liste des Produits ({filteredProducts.length} résultats)
+          </h3>
+          
+          <button
+            onClick={handleExport}
+            className="bg-gradient-to-r from-green-500 to-green-600 text-white font-semibold 
+                       py-2 px-4 rounded-lg hover:from-green-600 hover:to-green-700 
+                       transition-all duration-200 flex items-center space-x-2"
+          >
+            <Download className="w-4 h-4" />
+            <span>Export</span>
+          </button>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-gray-700">
+                <th className="text-left py-4 px-4">
+                  <button
+                    onClick={toggleSelectAll}
+                    className="text-gray-400 hover:text-white transition-colors duration-200"
+                  >
+                    {selectedProducts.size === paginatedProducts.length && paginatedProducts.length > 0 ? (
+                      <CheckSquare className="w-5 h-5" />
+                    ) : (
+                      <Square className="w-5 h-5" />
+                    )}
+                  </button>
+                </th>
+                {[
+                  { key: 'name', label: 'Nom' },
+                  { key: 'category', label: 'Catégorie' },
+                  { key: 'price', label: 'Prix' },
+                  { key: 'initialStock', label: 'Stock Initial' },
+                  { key: 'stock', label: 'Stock Actuel' },
+                  { key: 'minStock', label: 'Stock Min' },
+                  { key: 'quantitySold', label: 'Vendus' },
+                  { key: 'revenue', label: 'CA' }
+                ].map(({ key, label }) => (
+                  <th
+                    key={key}
+                    className="text-left py-4 px-4 text-gray-400 font-medium cursor-pointer hover:text-white
+                               transition-colors duration-200"
+                    onClick={() => key !== 'revenue' ? handleSort(key as keyof Product) : null}
+                  >
+                    <div className="flex items-center space-x-1">
+                      <span>{label}</span>
+                      {key !== 'revenue' && <ArrowUpDown className="w-4 h-4" />}
+                    </div>
+                  </th>
+                ))}
+                <th className="text-left py-4 px-4 text-gray-400 font-medium">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {paginatedProducts.map((product, index) => (
+                <motion.tr
+                  key={product.id}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ delay: index * 0.01 }}
+                  className={`border-b border-gray-700/50 hover:bg-gray-700/20 transition-colors duration-200 ${
+                    selectedProducts.has(product.id) ? 'bg-cyan-500/10' : ''
+                  }`}
+                >
+                  <td className="py-4 px-4">
+                    <button
+                      onClick={() => toggleSelectProduct(product.id)}
+                      className="text-gray-400 hover:text-cyan-400 transition-colors duration-200"
+                    >
+                      {selectedProducts.has(product.id) ? (
+                        <CheckSquare className="w-5 h-5 text-cyan-400" />
+                      ) : (
+                        <Square className="w-5 h-5" />
+                      )}
+                    </button>
+                  </td>
+                  <td className="py-4 px-4">
+                    <div>
+                      <p className="text-white font-medium">{product.name}</p>
+                      {product.description && (
+                        <p className="text-gray-400 text-sm">{product.description}</p>
+                      )}
+                    </div>
+                  </td>
+                  <td className="py-4 px-4">
+                    <span className="bg-purple-500/20 text-purple-400 px-2 py-1 rounded-full text-xs font-medium">
+                      {product.category}
+                    </span>
+                  </td>
+                  <td className="py-4 px-4 text-green-400 font-semibold">
+                    {product.price.toFixed(2)} €
+                  </td>
+                  <td className="py-4 px-4">
+                    <input
+                      type="number"
+                      value={product.initialStock || 0}
+                      onChange={(e) => handleInitialStockChange(product.id, parseInt(e.target.value) || 0)}
+                      className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm
+                                focus:outline-none focus:border-cyan-500 text-center"
+                      min="0"
+                    />
+                  </td>
+                  <td className="py-4 px-4">
+                    <div className="flex items-center space-x-2">
+                      <div className="flex flex-col">
+                        <span className={`font-semibold ${
+                          product.displayStock === 0 ? 'text-red-400' :
+                          product.displayStock <= product.minStock ? 'text-orange-400' :
+                          'text-white'
+                        }`}>
+                          {product.displayStock}
+                        </span>
+                        {product.isHistoricalView && product.displayStock !== product.originalStock && (
+                          <span className="text-xs text-gray-400">
+                            (actuel: {product.originalStock})
+                          </span>
+                        )}
+                      </div>
+                      {product.displayStock <= product.minStock && (
+                        <AlertTriangle className="w-4 h-4 text-orange-400" />
+                      )}
+                      {product.isHistoricalView && (
+                        <Calendar className="w-4 h-4 text-blue-400" title="Vue historique" />
+                      )}
+                    </div>
+                  </td>
+                  <td className="py-4 px-4 text-gray-300">{product.minStock}</td>
+                  <td className="py-4 px-4">
+                    <div className="flex flex-col">
+                      <span className="text-cyan-400 font-medium">
+                        {product.displayQuantitySold}
+                      </span>
+                      {product.isHistoricalView && product.displayQuantitySold !== product.originalQuantitySold && (
+                        <span className="text-xs text-gray-400">
+                          (total: {product.originalQuantitySold})
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="py-4 px-4 text-purple-400 font-semibold">
+                    {formatCurrency(productRevenues.get(product.id) || 0)}
+                  </td>
+                  <td className="py-4 px-4">
+                    <div className="flex space-x-2">
+                      <button 
+                        onClick={() => {
+                          setEditingProduct(product);
+                          setShowEditModal(true);
+                        }}
+                        className="p-2 bg-blue-500/20 text-blue-400 rounded-lg hover:bg-blue-500/30 
+                                   transition-all duration-200"
+                        title="Modifier le produit"
+                      >
+                        <Edit className="w-4 h-4" />
+                      </button>
+                      
+                      <button 
+                        onClick={() => {
+                          setEditingProduct(product);
+                          setShowHistoryModal(true);
+                        }}
+                        className="p-2 bg-purple-500/20 text-purple-400 rounded-lg hover:bg-purple-500/30 
+                                   transition-all duration-200"
+                        title="Historique du stock"
+                      >
+                        <History className="w-4 h-4" />
+                      </button>
+                      
+                      <button 
+                        onClick={() => {
+                          setSelectedProducts(new Set([product.id]));
+                          setShowDeleteModal(true);
+                        }}
+                        className="p-2 bg-red-500/20 text-red-400 rounded-lg hover:bg-red-500/30 
+                                   transition-all duration-200"
+                        title="Supprimer le produit"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </td>
+                </motion.tr>
+              ))}
+            </tbody>
+          </table>
+          
+          {filteredProducts.length === 0 && (
+            <div className="text-center py-8 text-gray-400">
+              <Package className="w-12 h-12 mx-auto mb-2 opacity-50" />
+              <p>Aucun produit trouvé</p>
+              {hasActiveFilters && (
+                <p className="text-sm mt-1">Essayez de modifier vos filtres</p>
+              )}
+            </div>
+          )}
+        </div>
+      </motion.div>
+
+      {/* Edit Product Modal */}
+      <AnimatePresence>
+        {showEditModal && editingProduct && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="bg-gray-800 border border-gray-700 rounded-2xl p-6 w-full max-w-2xl"
+            >
+              <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center space-x-3">
+                  <div className="w-10 h-10 bg-blue-500/20 rounded-full flex items-center justify-center">
+                    <Edit className="w-5 h-5 text-blue-400" />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-semibold text-white">Modifier le Produit</h3>
+                    <p className="text-gray-400 text-sm">ID: {editingProduct.id}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowEditModal(false);
+                    setEditingProduct(null);
+                  }}
+                  className="text-gray-400 hover:text-white transition-colors duration-200"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">
+                      Nom du produit
+                    </label>
+                    <input
+                      type="text"
+                      value={editForm.name}
+                      onChange={(e) => setEditForm({...editForm, name: e.target.value})}
+                      className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white
+                                focus:outline-none focus:border-cyan-500"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">
+                      Catégorie
+                    </label>
+                    <input
+                      type="text"
+                      value={editForm.category}
+                      onChange={(e) => setEditForm({...editForm, category: e.target.value})}
+                      className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white
+                                focus:outline-none focus:border-cyan-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">
+                      Prix (€)
+                    </label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={editForm.price}
+                      onChange={(e) => setEditForm({...editForm, price: e.target.value})}
+                      className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white
+                                focus:outline-none focus:border-cyan-500"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">
+                      Stock initial
+                    </label>
+                    <input
+                      type="number"
+                      step="1"
+                      min="0"
+                      value={editForm.initialStock}
+                      onChange={(e) => setEditForm({...editForm, initialStock: e.target.value})}
+                      className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white
+                                focus:outline-none focus:border-cyan-500"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">
+                      Stock actuel
+                    </label>
+                    <input
+                      type="number"
+                      step="1"
+                      min="0"
+                      value={editForm.stock}
+                      onChange={(e) => setEditForm({...editForm, stock: e.target.value})}
+                      className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white
+                                focus:outline-none focus:border-cyan-500"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">
+                      Stock minimum
+                    </label>
+                    <input
+                      type="number"
+                      step="1"
+                      min="0"
+                      value={editForm.minStock}
+                      onChange={(e) => setEditForm({...editForm, minStock: e.target.value})}
+                      className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white
+                                focus:outline-none focus:border-cyan-500"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-400 mb-2">
+                    Description
+                  </label>
+                  <textarea
+                    value={editForm.description}
+                    onChange={(e) => setEditForm({...editForm, description: e.target.value})}
+                    rows={3}
+                    className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white
+                              focus:outline-none focus:border-cyan-500"
+                  ></textarea>
+                </div>
+
+                <div className="flex space-x-3 mt-6">
+                  <button
+                    onClick={handleEditProduct}
+                    disabled={isUpdating}
+                    className="flex-1 bg-gradient-to-r from-blue-500 to-blue-600 text-white font-semibold 
+                              py-3 px-4 rounded-xl hover:from-blue-600 hover:to-blue-700 
+                              disabled:opacity-50 disabled:cursor-not-allowed
+                              transition-all duration-200 flex items-center justify-center space-x-2"
+                  >
+                    {isUpdating ? (
+                      <>
+                        <RefreshCw className="w-5 h-5 animate-spin" />
+                        <span>Mise à jour...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Save className="w-5 h-5" />
+                        <span>Sauvegarder</span>
+                      </>
+                    )}
+                  </button>
+                  
+                  <button
+                    onClick={() => {
+                      setShowEditModal(false);
+                      setEditingProduct(null);
+                    }}
+                    disabled={isUpdating}
+                    className="px-6 py-3 bg-gray-600 text-white font-semibold rounded-xl 
+                              hover:bg-gray-500 disabled:opacity-50 disabled:cursor-not-allowed
+                              transition-all duration-200"
+                  >
+                    Annuler
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Delete Confirmation Modal */}
+      <AnimatePresence>
+        {showDeleteModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="bg-gray-800 border border-gray-700 rounded-2xl p-6 w-full max-w-md"
+            >
+              <div className="flex items-center space-x-3 mb-4">
+                <div className="w-12 h-12 bg-red-500/20 rounded-full flex items-center justify-center">
+                  <AlertTriangle className="w-6 h-6 text-red-400" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-white">Confirmer la suppression</h3>
+                  <p className="text-gray-400 text-sm">Cette action est irréversible</p>
+                </div>
+              </div>
+
+              <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 mb-6">
+                <h4 className="text-red-400 font-semibold mb-2">Produits à supprimer :</h4>
+                <div className="text-gray-300 text-sm">
+                  <div>• <strong>{selectedProducts.size}</strong> produit(s) sélectionné(s)</div>
+                  <div>• Les données de stock seront définitivement perdues</div>
+                  <div>• L'historique des ventes sera préservé</div>
+                </div>
+              </div>
+
+              <div className="flex space-x-3">
+                <button
+                  onClick={handleDeleteProducts}
+                  disabled={isDeleting}
+                  className="flex-1 bg-gradient-to-r from-red-500 to-red-600 text-white font-semibold 
+                             py-3 px-4 rounded-xl hover:from-red-600 hover:to-red-700 
+                             disabled:opacity-50 disabled:cursor-not-allowed
+                             transition-all duration-200 flex items-center justify-center space-x-2"
+                >
+                  {isDeleting ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>Suppression...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="w-4 h-4" />
+                      <span>Confirmer la suppression</span>
+                    </>
+                  )}
+                </button>
+                
+                <button
+                  onClick={() => setShowDeleteModal(false)}
+                  disabled={isDeleting}
+                  className="px-6 py-3 bg-gray-600 text-white font-semibold rounded-xl 
+                             hover:bg-gray-500 disabled:opacity-50 disabled:cursor-not-allowed
+                             transition-all duration-200"
+                >
+                  Annuler
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Stock History Modal */}
+      <AnimatePresence>
+        {showHistoryModal && editingProduct && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="bg-gray-800 border border-gray-700 rounded-2xl p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto"
+            >
+              <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center space-x-3">
+                  <div className="w-10 h-10 bg-purple-500/20 rounded-full flex items-center justify-center">
+                    <History className="w-5 h-5 text-purple-400" />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-semibold text-white">Historique du Stock</h3>
+                    <p className="text-gray-400 text-sm">{editingProduct.name} - {editingProduct.category}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowHistoryModal(false)}
+                  className="text-gray-400 hover:text-white transition-colors duration-200"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+
+              {/* Stock Summary */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                <div className="bg-blue-500/20 border border-blue-500/30 rounded-xl p-4">
+                  <div className="flex items-center space-x-2 mb-2">
+                    <Package className="w-5 h-5 text-blue-400" />
+                    <span className="text-blue-400 font-medium">Stock Actuel</span>
+                  </div>
+                  <p className="text-2xl font-bold text-white">{editingProduct.stock}</p>
+                  <p className="text-blue-400 text-sm mt-1">unités disponibles</p>
+                </div>
+                
+                <div className="bg-green-500/20 border border-green-500/30 rounded-xl p-4">
+                  <div className="flex items-center space-x-2 mb-2">
+                    <Plus className="w-5 h-5 text-green-400" />
+                    <span className="text-green-400 font-medium">Stock Initial</span>
+                  </div>
+                  <p className="text-2xl font-bold text-white">{editingProduct.initialStock || 0}</p>
+                  <p className="text-green-400 text-sm mt-1">unités au départ</p>
+                </div>
+                
+                <div className="bg-red-500/20 border border-red-500/30 rounded-xl p-4">
+                  <div className="flex items-center space-x-2 mb-2">
+                    <ArrowUpDown className="w-5 h-5 text-red-400" />
+                    <span className="text-red-400 font-medium">Quantité Vendue</span>
+                  </div>
+                  <p className="text-2xl font-bold text-white">{editingProduct.quantitySold || 0}</p>
+                  <p className="text-red-400 text-sm mt-1">unités vendues</p>
+                </div>
+              </div>
+
+              {/* Stock History Table */}
+              <div className="bg-gray-700/30 rounded-xl p-4 mb-6">
+                <h4 className="text-white font-medium mb-3">Historique des Mouvements</h4>
+                
+                {editingProduct.stockHistory && editingProduct.stockHistory.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead>
+                        <tr className="border-b border-gray-600">
+                          <th className="text-left py-2 px-4 text-gray-400">Date</th>
+                          <th className="text-left py-2 px-4 text-gray-400">Type</th>
+                          <th className="text-right py-2 px-4 text-gray-400">Quantité</th>
+                          <th className="text-left py-2 px-4 text-gray-400">Référence</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {editingProduct.stockHistory.map((entry, index) => {
+                          const entryDate = entry.date instanceof Date ? entry.date : new Date(entry.date);
+                          
+                          return (
+                            <tr key={index} className="border-b border-gray-600/50">
+                              <td className="py-2 px-4 text-white">
+                                {format(entryDate, 'dd/MM/yyyy HH:mm')}
+                              </td>
+                              <td className="py-2 px-4">
+                                <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                                  entry.type === 'initial' ? 'bg-blue-500/20 text-blue-400' :
+                                  entry.type === 'addition' ? 'bg-green-500/20 text-green-400' :
+                                  entry.type === 'sale' ? 'bg-red-500/20 text-red-400' :
+                                  'bg-orange-500/20 text-orange-400'
+                                }`}>
+                                  {entry.type === 'initial' ? 'Initial' :
+                                   entry.type === 'addition' ? 'Ajout' :
+                                   entry.type === 'sale' ? 'Vente' :
+                                   'Ajustement'}
+                                </span>
+                              </td>
+                              <td className={`py-2 px-4 text-right font-medium ${
+                                entry.quantity >= 0 ? 'text-green-400' : 'text-red-400'
+                              }`}>
+                                {entry.quantity > 0 ? '+' : ''}{entry.quantity}
+                              </td>
+                              <td className="py-2 px-4 text-gray-300 text-sm">
+                                {entry.reference || '-'}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="text-center py-8 text-gray-400">
+                    <History className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                    <p>Aucun historique disponible pour ce produit</p>
+                    <p className="text-sm mt-1">L'historique sera généré automatiquement lors des mouvements de stock</p>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex justify-end">
+                <button
+                  onClick={() => setShowHistoryModal(false)}
+                  className="px-6 py-3 bg-gray-600 text-white font-semibold rounded-xl 
+                             hover:bg-gray-500 transition-all duration-200"
+                >
+                  Fermer
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
 }

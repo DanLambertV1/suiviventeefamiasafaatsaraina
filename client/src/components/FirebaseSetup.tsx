@@ -3,9 +3,12 @@ import { motion } from 'framer-motion';
 import { Database, CheckCircle, AlertTriangle, RefreshCw, Zap } from 'lucide-react';
 import { initializeFirebaseCollections } from '../utils/firebaseSetup';
 
+import { FIRESTORE_SECURITY_RULES } from '../utils/firebaseSetup';
+
 export function FirebaseSetup() {
   const [isInitializing, setIsInitializing] = useState(false);
   const [initStatus, setInitStatus] = useState<'idle' | 'success' | 'error'>('idle');
+  const [showRules, setShowRules] = useState(false);
   const [message, setMessage] = useState('');
 
   const handleInitialize = async () => {
@@ -59,6 +62,39 @@ export function FirebaseSetup() {
             Initialize your Firebase database with sample data to get started quickly.
             This will create the necessary collections and add sample products and sales.
           </p>
+          
+          {initStatus === 'error' && (
+            <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
+              <h3 className="text-red-800 font-semibold mb-2">❌ Erreur de permissions Firebase</h3>
+              <p className="text-red-700 mb-3">
+                Les règles de sécurité Firestore doivent être configurées pour permettre l'accès aux collections.
+              </p>
+              <button
+                onClick={() => setShowRules(!showRules)}
+                className="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 transition-colors"
+              >
+                {showRules ? 'Masquer' : 'Voir'} les règles de sécurité
+              </button>
+              
+              {showRules && (
+                <div className="mt-4">
+                  <p className="text-red-700 mb-2 font-semibold">
+                    📋 Instructions pour corriger les permissions :
+                  </p>
+                  <ol className="text-red-700 mb-3 list-decimal list-inside space-y-1">
+                    <li>Allez dans la <a href="https://console.firebase.google.com" target="_blank" rel="noopener noreferrer" className="underline">Console Firebase</a></li>
+                    <li>Sélectionnez votre projet</li>
+                    <li>Allez dans "Firestore Database" → "Règles"</li>
+                    <li>Remplacez les règles par le code ci-dessous</li>
+                    <li>Cliquez sur "Publier"</li>
+                  </ol>
+                  <pre className="bg-gray-900 text-green-400 p-4 rounded text-sm overflow-x-auto">
+                    {FIRESTORE_SECURITY_RULES}
+                  </pre>
+                </div>
+              )}
+            </div>
+          )}
           
           <button
             onClick={handleInitialize}
